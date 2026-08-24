@@ -1,0 +1,178 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Dow Theory EA - Converted to Pine Script v6
+// EA Dow Theory - Auto Swing + Trendline
+// 1. หา Swing High/Low อัตโนมัติ (Fractal)
+// 2. วาด Trendline เขียว(ขึ้น) แดง(ลง)
+// 3. บอกสถานะ Trend ปัจจุบัน HH/HL/LH/LL
+
+//@version=6
+indicator("Dow Theory Trend", overlay=true, max_lines_count=500, max_labels_count=500)
+
+// === Inputs ===
+inpLeftRight    = input.int(3, "Swing Left/Right Bars (Fractal)", minval=1, maxval=20)
+inpLookback     = input.int(300, "Lookback Bars", minval=50, maxval=1000)
+inpShowLabels   = input.bool(true, "Show HH/HL/LH/LL Labels")
+inpRay          = input.bool(true, "Extend Trendline Right")
+inpUpColor      = input.color(color.lime, "Uptrend Color")
+inpDownColor    = input.color(color.red, "Downtrend Color")
+inpShowPanel    = input.bool(true, "Show Info Panel")
+
+// === Swing Detection (Fractal) ===
+isSwingHigh = ta.pivothigh(high, inpLeftRight, inpLeftRight)
+isSwingLow  = ta.pivotlow(low, inpLeftRight, inpLeftRight)
+
+// === Collect Swing Highs & Lows ===
+var float[] swingHighPrices = array.new_float()
+var int[]   swingHighBars   = array.new_int()
+var float[] swingLowPrices  = array.new_float()
+var int[]   swingLowBars    = array.new_int()
+
+var line upTrendLine   = na
+var line downTrendLine = na
+
+if barstate.isfirst
+    array.clear(swingHighPrices)
+    array.clear(swingHighBars)
+    array.clear(swingLowPrices)
+    array.clear(swingLowBars)
+
+swingOffset = inpLeftRight
+
+if not na(isSwingHigh)
+    array.push(swingHighPrices, isSwingHigh)
+    array.push(swingHighBars, bar_index - swingOffset)
+    if array.size(swingHighPrices) > inpLookback
+        array.shift(swingHighPrices)
+        array.shift(swingHighBars)
+
+if not na(isSwingLow)
+    array.push(swingLowPrices, isSwingLow)
+    array.push(swingLowBars, bar_index - swingOffset)
+    if array.size(swingLowPrices) > inpLookback
+        array.shift(swingLowPrices)
+        array.shift(swingLowBars)
+
+// === Dow Theory Analysis ===
+hCount = array.size(swingHighPrices)
+lCount = array.size(swingLowPrices)
+
+var string trendState = "SIDEWAY"
+var color  trendColor = color.orange
+
+if hCount >= 2 and lCount >= 2
+    lastHigh = array.get(swingHighPrices, hCount - 1)
+    prevHigh = array.get(swingHighPrices, hCount - 2)
+    lastLow  = array.get(swingLowPrices, lCount - 1)
+    prevLow  = array.get(swingLowPrices, lCount - 2)
+
+    lastHighBar = array.get(swingHighBars, hCount - 1)
+    prevHighBar = array.get(swingHighBars, hCount - 2)
+    lastLowBar  = array.get(swingLowBars, lCount - 1)
+    prevLowBar  = array.get(swingLowBars, lCount - 2)
+
+    isHH = lastHigh > prevHigh
+    isHL = lastLow > prevLow
+    isLL = lastLow < prevLow
+    isLH = lastHigh < prevHigh
+
+    isUpTrend   = isHH and isHL
+    isDownTrend = isLL and isLH
+
+    if isUpTrend
+        trendState := "UPTREND - HH + HL"
+        trendColor := inpUpColor
+    else if isDownTrend
+        trendState := "DOWNTREND - LL + LH"
+        trendColor := inpDownColor
+    else
+        trendState := "SIDEWAY / CORRECTION"
+        trendColor := color.orange
+
+    // === Draw Trendlines ===
+    extendStyle = inpRay ? extend.right : extend.none
+
+    // Uptrend line: Low -> Low
+    if lCount >= 2
+        if not na(upTrendLine)
+            line.delete(upTrendLine)
+        upTrendLine := line.new(
+             prevLowBar, prevLow,
+             lastLowBar, lastLow,
+             color=inpUpColor,
+             width=isUpTrend ? 3 : 1,
+             style=line.style_solid,
+             extend=extendStyle)
+
+    // Downtrend line: High -> High
+    if hCount >= 2
+        if not na(downTrendLine)
+            line.delete(downTrendLine)
+        downTrendLine := line.new(
+             prevHighBar, prevHigh,
+             lastHighBar, lastHigh,
+             color=inpDownColor,
+             width=isDownTrend ? 3 : 1,
+             style=line.style_solid,
+             extend=extendStyle)
+
+    // === Swing Labels (HH/HL/LH/LL) ===
+    if inpShowLabels
+        if not na(isSwingHigh)
+            labelHigh = ""
+            if hCount >= 2
+                labelHigh := isHH ? "HH" : "LH"
+            else
+                labelHigh := "H"
+            label.new(
+                 bar_index - swingOffset, isSwingHigh,
+                 text=labelHigh,
+                 style=label.style_label_down,
+                 color=color.new(color.white, 100),
+                 textcolor=inpDownColor,
+                 size=size.small)
+
+        if not na(isSwingLow)
+            labelLow = ""
+            if lCount >= 2
+                labelLow := isHL ? "HL" : "LL"
+            else
+                labelLow := "L"
+            label.new(
+                 bar_index - swingOffset, isSwingLow,
+                 text=labelLow,
+                 style=label.style_label_up,
+                 color=color.new(color.white, 100),
+                 textcolor=inpUpColor,
+                 size=size.small)
+
+// === Info Panel (Table) ===
+if inpShowPanel and barstate.islast and hCount >= 2 and lCount >= 2
+    lastHigh2 = array.get(swingHighPrices, hCount - 1)
+    prevHigh2 = array.get(swingHighPrices, hCount - 2)
+    lastLow2  = array.get(swingLowPrices, lCount - 1)
+    prevLow2  = array.get(swingLowPrices, lCount - 2)
+
+    var table panel = table.new(position.top_left, 2, 5, bgcolor=color.new(color.black, 70), border_width=1)
+
+    table.cell(panel, 0, 0, "Dow Theory", text_color=trendColor, text_size=size.normal, text_halign=text.align_left)
+    table.cell(panel, 1, 0, trendState, text_color=trendColor, text_size=size.normal, text_halign=text.align_left)
+
+    table.cell(panel, 0, 1, "Last High", text_color=color.white, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 1, 1, str.tostring(lastHigh2, format.mintick) + (lastHigh2 > prevHigh2 ? " (HH)" : " (LH)"), text_color=lastHigh2 > prevHigh2 ? inpUpColor : inpDownColor, text_size=size.small, text_halign=text.align_left)
+
+    table.cell(panel, 0, 2, "Prev High", text_color=color.gray, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 1, 2, str.tostring(prevHigh2, format.mintick), text_color=color.gray, text_size=size.small, text_halign=text.align_left)
+
+    table.cell(panel, 0, 3, "Last Low", text_color=color.white, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 1, 3, str.tostring(lastLow2, format.mintick) + (lastLow2 > prevLow2 ? " (HL)" : " (LL)"), text_color=lastLow2 > prevLow2 ? inpUpColor : inpDownColor, text_size=size.small, text_halign=text.align_left)
+
+    table.cell(panel, 0, 4, "Prev Low", text_color=color.gray, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 1, 4, str.tostring(prevLow2, format.mintick), text_color=color.gray, text_size=size.small, text_halign=text.align_left)
+
+// === Background Color Hint ===
+bgcolor(hCount >= 2 and lCount >= 2 ? color.new(trendColor, 95) : na)
+
+// === Alert Conditions ===
+alertcondition(trendState == "UPTREND - HH + HL", title="Uptrend Detected", message="Dow Theory: UPTREND - HH + HL detected")
+alertcondition(trendState == "DOWNTREND - LL + LH", title="Downtrend Detected", message="Dow Theory: DOWNTREND - LL + LH detected")
+alertcondition(trendState == "SIDEWAY / CORRECTION", title="Sideway Detected", message="Dow Theory: SIDEWAY / CORRECTION detected")
