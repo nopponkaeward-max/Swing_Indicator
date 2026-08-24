@@ -1,9 +1,13 @@
 // This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
 // © Dow Theory EA - Converted to Pine Script v6
-// EA Dow Theory - Auto Swing + Trendline
+// EA Dow Theory - Auto Swing + Trendline + Entry Strategies
 // 1. หา Swing High/Low อัตโนมัติ (Fractal)
 // 2. วาด Trendline เขียว(ขึ้น) แดง(ลง)
 // 3. บอกสถานะ Trend ปัจจุบัน HH/HL/LH/LL
+// 4. สัญญาณเข้าเทรด 3 กลยุทธ์ (เลือกจาก dropdown)
+//    - Strategy 1: Pullback to Trendline
+//    - Strategy 2: Break of Structure (BOS)
+//    - Strategy 3: Trendline Break Reversal
 
 //@version=6
 indicator("Dow Theory Trend", overlay=true, max_lines_count=500, max_labels_count=500)
@@ -17,6 +21,21 @@ inpUpColor      = input.color(color.lime, "Uptrend Color")
 inpDownColor    = input.color(color.red, "Downtrend Color")
 inpShowPanel    = input.bool(true, "Show Info Panel")
 
+// --- Strategy Selector ---
+STRAT_NONE = "None"
+STRAT_1    = "Strategy 1: Pullback to Trendline"
+STRAT_2    = "Strategy 2: Break of Structure (BOS)"
+STRAT_3    = "Strategy 3: Trendline Break Reversal"
+STRAT_ALL  = "All Strategies"
+
+inpStrategy = input.string(STRAT_2, "Entry Strategy",
+     options=[STRAT_NONE, STRAT_1, STRAT_2, STRAT_3, STRAT_ALL],
+     group="Entry Signals")
+
+useS1 = inpStrategy == STRAT_1 or inpStrategy == STRAT_ALL
+useS2 = inpStrategy == STRAT_2 or inpStrategy == STRAT_ALL
+useS3 = inpStrategy == STRAT_3 or inpStrategy == STRAT_ALL
+
 // === Swing Detection (Fractal) ===
 isSwingHigh = ta.pivothigh(high, inpLeftRight, inpLeftRight)
 isSwingLow  = ta.pivotlow(low, inpLeftRight, inpLeftRight)
@@ -29,12 +48,6 @@ var int[]   swingLowBars    = array.new_int()
 
 var line upTrendLine   = na
 var line downTrendLine = na
-
-if barstate.isfirst
-    array.clear(swingHighPrices)
-    array.clear(swingHighBars)
-    array.clear(swingLowPrices)
-    array.clear(swingLowBars)
 
 swingOffset = inpLeftRight
 
@@ -59,6 +72,11 @@ lCount = array.size(swingLowPrices)
 var string trendState = "SIDEWAY"
 var color  trendColor = color.orange
 
+bool  isUpTrend   = false
+bool  isDownTrend = false
+float upLineVal   = na   // ราคาของเส้น Uptrend ที่แท่งปัจจุบัน
+float downLineVal = na   // ราคาของเส้น Downtrend ที่แท่งปัจจุบัน
+
 if hCount >= 2 and lCount >= 2
     lastHigh = array.get(swingHighPrices, hCount - 1)
     prevHigh = array.get(swingHighPrices, hCount - 2)
@@ -75,8 +93,8 @@ if hCount >= 2 and lCount >= 2
     isLL = lastLow < prevLow
     isLH = lastHigh < prevHigh
 
-    isUpTrend   = isHH and isHL
-    isDownTrend = isLL and isLH
+    isUpTrend   := isHH and isHL
+    isDownTrend := isLL and isLH
 
     if isUpTrend
         trendState := "UPTREND - HH + HL"
@@ -92,37 +110,35 @@ if hCount >= 2 and lCount >= 2
     extendStyle = inpRay ? extend.right : extend.none
 
     // Uptrend line: Low -> Low
-    if lCount >= 2
-        if not na(upTrendLine)
-            line.delete(upTrendLine)
-        upTrendLine := line.new(
-             prevLowBar, prevLow,
-             lastLowBar, lastLow,
-             color=inpUpColor,
-             width=isUpTrend ? 3 : 1,
-             style=line.style_solid,
-             extend=extendStyle)
+    if not na(upTrendLine)
+        line.delete(upTrendLine)
+    upTrendLine := line.new(
+         prevLowBar, prevLow,
+         lastLowBar, lastLow,
+         color=inpUpColor,
+         width=isUpTrend ? 3 : 1,
+         style=line.style_solid,
+         extend=extendStyle)
 
     // Downtrend line: High -> High
-    if hCount >= 2
-        if not na(downTrendLine)
-            line.delete(downTrendLine)
-        downTrendLine := line.new(
-             prevHighBar, prevHigh,
-             lastHighBar, lastHigh,
-             color=inpDownColor,
-             width=isDownTrend ? 3 : 1,
-             style=line.style_solid,
-             extend=extendStyle)
+    if not na(downTrendLine)
+        line.delete(downTrendLine)
+    downTrendLine := line.new(
+         prevHighBar, prevHigh,
+         lastHighBar, lastHigh,
+         color=inpDownColor,
+         width=isDownTrend ? 3 : 1,
+         style=line.style_solid,
+         extend=extendStyle)
+
+    // ราคาของเส้น trend ณ แท่งปัจจุบัน (extrapolate ไปข้างหน้า)
+    upLineVal   := line.get_price(upTrendLine, bar_index)
+    downLineVal := line.get_price(downTrendLine, bar_index)
 
     // === Swing Labels (HH/HL/LH/LL) ===
     if inpShowLabels
         if not na(isSwingHigh)
-            labelHigh = ""
-            if hCount >= 2
-                labelHigh := isHH ? "HH" : "LH"
-            else
-                labelHigh := "H"
+            labelHigh = isHH ? "HH" : "LH"
             label.new(
                  bar_index - swingOffset, isSwingHigh,
                  text=labelHigh,
@@ -132,11 +148,7 @@ if hCount >= 2 and lCount >= 2
                  size=size.small)
 
         if not na(isSwingLow)
-            labelLow = ""
-            if lCount >= 2
-                labelLow := isHL ? "HL" : "LL"
-            else
-                labelLow := "L"
+            labelLow = isHL ? "HL" : "LL"
             label.new(
                  bar_index - swingOffset, isSwingLow,
                  text=labelLow,
@@ -145,6 +157,59 @@ if hCount >= 2 and lCount >= 2
                  textcolor=inpUpColor,
                  size=size.small)
 
+// ==================================================================
+// === Entry Signals ===
+// ==================================================================
+
+// --- Strategy 1: Pullback to Trendline ---
+// Uptrend ยืนยันแล้ว + ราคาย่อลงมาแตะเส้น Uptrend แล้วปิดกลับเหนือเส้น -> Buy
+// Downtrend ยืนยันแล้ว + ราคาดีดขึ้นไปแตะเส้น Downtrend แล้วปิดกลับใต้เส้น -> Sell
+s1BuyRaw  = isUpTrend and not na(upLineVal) and low <= upLineVal and close > upLineVal
+s1SellRaw = isDownTrend and not na(downLineVal) and high >= downLineVal and close < downLineVal
+s1Buy  = s1BuyRaw and not s1BuyRaw[1]    // ยิงเฉพาะแท่งแรกที่แตะ ไม่ยิงซ้ำติดกัน
+s1Sell = s1SellRaw and not s1SellRaw[1]
+
+// --- Strategy 2: Break of Structure (BOS) ---
+// สถานะเพิ่งเปลี่ยนเป็น UPTREND ครั้งแรก (แท่งที่ครบ HH+HL) -> Buy
+// สถานะเพิ่งเปลี่ยนเป็น DOWNTREND ครั้งแรก (แท่งที่ครบ LL+LH) -> Sell
+s2Buy  = isUpTrend and not isUpTrend[1]
+s2Sell = isDownTrend and not isDownTrend[1]
+
+// --- Strategy 3: Trendline Break Reversal ---
+// เดิมเป็น Uptrend แล้วราคาปิดทะลุลงใต้เส้น Uptrend -> Sell (สัญญาณกลับตัว)
+// เดิมเป็น Downtrend แล้วราคาปิดทะลุขึ้นเหนือเส้น Downtrend -> Buy (สัญญาณกลับตัว)
+s3SellRaw = isUpTrend and not na(upLineVal) and close < upLineVal
+s3BuyRaw  = isDownTrend and not na(downLineVal) and close > downLineVal
+s3Sell = s3SellRaw and not s3SellRaw[1]
+s3Buy  = s3BuyRaw and not s3BuyRaw[1]
+
+// --- รวมสัญญาณตาม dropdown ---
+buySignal  = (useS1 and s1Buy) or (useS2 and s2Buy) or (useS3 and s3Buy)
+sellSignal = (useS1 and s1Sell) or (useS2 and s2Sell) or (useS3 and s3Sell)
+
+// --- วาด label วงกลมเล็กที่จุดเข้าออเดอร์ ---
+if barstate.isconfirmed and buySignal
+    buyTip = (useS1 and s1Buy ? "S1 Pullback Buy\n" : "") +
+             (useS2 and s2Buy ? "S2 BOS Buy (HH+HL ครั้งแรก)\n" : "") +
+             (useS3 and s3Buy ? "S3 Trendline Break Buy\n" : "")
+    label.new(bar_index, na,
+         style=label.style_circle,
+         color=inpUpColor,
+         size=size.tiny,
+         yloc=yloc.belowbar,
+         tooltip="BUY\n" + buyTip)
+
+if barstate.isconfirmed and sellSignal
+    sellTip = (useS1 and s1Sell ? "S1 Pullback Sell\n" : "") +
+              (useS2 and s2Sell ? "S2 BOS Sell (LL+LH ครั้งแรก)\n" : "") +
+              (useS3 and s3Sell ? "S3 Trendline Break Sell\n" : "")
+    label.new(bar_index, na,
+         style=label.style_circle,
+         color=inpDownColor,
+         size=size.tiny,
+         yloc=yloc.abovebar,
+         tooltip="SELL\n" + sellTip)
+
 // === Info Panel (Table) ===
 if inpShowPanel and barstate.islast and hCount >= 2 and lCount >= 2
     lastHigh2 = array.get(swingHighPrices, hCount - 1)
@@ -152,7 +217,7 @@ if inpShowPanel and barstate.islast and hCount >= 2 and lCount >= 2
     lastLow2  = array.get(swingLowPrices, lCount - 1)
     prevLow2  = array.get(swingLowPrices, lCount - 2)
 
-    var table panel = table.new(position.top_left, 2, 5, bgcolor=color.new(color.black, 70), border_width=1)
+    var table panel = table.new(position.top_left, 2, 6, bgcolor=color.new(color.black, 70), border_width=1)
 
     table.cell(panel, 0, 0, "Dow Theory", text_color=trendColor, text_size=size.normal, text_halign=text.align_left)
     table.cell(panel, 1, 0, trendState, text_color=trendColor, text_size=size.normal, text_halign=text.align_left)
@@ -169,6 +234,9 @@ if inpShowPanel and barstate.islast and hCount >= 2 and lCount >= 2
     table.cell(panel, 0, 4, "Prev Low", text_color=color.gray, text_size=size.small, text_halign=text.align_left)
     table.cell(panel, 1, 4, str.tostring(prevLow2, format.mintick), text_color=color.gray, text_size=size.small, text_halign=text.align_left)
 
+    table.cell(panel, 0, 5, "Strategy", text_color=color.aqua, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 1, 5, inpStrategy, text_color=color.aqua, text_size=size.small, text_halign=text.align_left)
+
 // === Background Color Hint ===
 bgcolor(hCount >= 2 and lCount >= 2 ? color.new(trendColor, 95) : na)
 
@@ -176,3 +244,12 @@ bgcolor(hCount >= 2 and lCount >= 2 ? color.new(trendColor, 95) : na)
 alertcondition(trendState == "UPTREND - HH + HL", title="Uptrend Detected", message="Dow Theory: UPTREND - HH + HL detected")
 alertcondition(trendState == "DOWNTREND - LL + LH", title="Downtrend Detected", message="Dow Theory: DOWNTREND - LL + LH detected")
 alertcondition(trendState == "SIDEWAY / CORRECTION", title="Sideway Detected", message="Dow Theory: SIDEWAY / CORRECTION detected")
+
+alertcondition(s1Buy,  title="S1 Pullback Buy",        message="Dow Theory S1: Pullback to uptrend line - BUY")
+alertcondition(s1Sell, title="S1 Pullback Sell",       message="Dow Theory S1: Pullback to downtrend line - SELL")
+alertcondition(s2Buy,  title="S2 BOS Buy",             message="Dow Theory S2: BOS first HH+HL - BUY")
+alertcondition(s2Sell, title="S2 BOS Sell",            message="Dow Theory S2: BOS first LL+LH - SELL")
+alertcondition(s3Buy,  title="S3 Trendline Break Buy", message="Dow Theory S3: Break above downtrend line - BUY")
+alertcondition(s3Sell, title="S3 Trendline Break Sell",message="Dow Theory S3: Break below uptrend line - SELL")
+alertcondition(buySignal,  title="Any Buy Signal",  message="Dow Theory: BUY signal (selected strategy)")
+alertcondition(sellSignal, title="Any Sell Signal", message="Dow Theory: SELL signal (selected strategy)")
