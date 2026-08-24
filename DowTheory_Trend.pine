@@ -8,8 +8,10 @@
 //    - Buy  : เจอ LL ก่อน แล้วต่อมาเกิด HH -> เข้า Buy ที่แท่งที่ HH confirm
 //    - Sell : เจอ HH ก่อน แล้วต่อมาเกิด LL -> เข้า Sell ที่แท่งที่ LL confirm
 //    วาดเส้นเล็ก ๆ ที่ระดับราคาเปิดออเดอร์เป็น marker
-// 5. Exit system: SL (swing + ATR buffer), TP (Swing Target / Risk:Reward /
-//    Trailing Swing), Structure Exit เมื่อโครงสร้าง Dow เปลี่ยน
+// 5. Entry Mode สไตล์ V10.1: Breakout (เข้าทันที) / Pullback (pending order)
+//    + Risk Management: 1R Basis (SL% / Distance / ATR), SL Edge Mode,
+//    Risk per 1R ($) → คำนวณ Lot อัตโนมัติ, R:R Ratio, Spread
+//    Exit เหลือแค่ SL / TP hit เท่านั้น
 // 6. Stats tables สไตล์ V10.1: Main Stats / By Day / Daily Log / Monthly
 
 //@version=6
@@ -30,16 +32,61 @@ inpShowPanel    = input.bool(true, "Show Info Panel")
 inpEnableEntry     = input.bool(true, "Enable Swing Reversal Entries", group="Entry Signals")
 inpShowPatternBox  = input.bool(true, "Show LL→HH / HH→LL Pattern Box", group="Entry Signals", tooltip="วาดกรอบครอบช่วงระหว่างจุด LL กับ HH (สำหรับ Buy) หรือ HH กับ LL (สำหรับ Sell) เพื่อให้สังเกต pattern ได้ง่าย")
 
-// --- Exit Settings ---
-TP_SWING = "Swing Target"
-TP_RR    = "Risk:Reward"
-TP_TRAIL = "Trailing Swing"
+// --- Entry Mode (V10.1 style: Breakout / Pullback) ---
+ENTRY_MODE_BREAKOUT = "1. Breakout"
+ENTRY_MODE_PULLBACK = "2. Pullback"
 
-inpTpMode        = input.string(TP_RR, "TP Mode", options=[TP_SWING, TP_RR, TP_TRAIL], group="Exit Settings")
-inpRR            = input.float(2.0, "Risk:Reward Ratio", minval=0.5, step=0.5, group="Exit Settings")
-inpAtrLen        = input.int(14, "ATR Length (SL Buffer)", minval=1, group="Exit Settings")
-inpSlBufMult     = input.float(0.5, "SL Buffer (ATR multiplier)", minval=0.0, step=0.1, group="Exit Settings")
-inpShowExitLines = input.bool(true, "Show Entry/SL/TP Lines", group="Exit Settings")
+entryModeTip = "1. Breakout — เข้าที่ close ของแท่งที่ pattern confirm ทันที (เร็ว แต่ R:R แคบ)\n2. Pullback — สร้าง pending order ที่ระดับ pullback (ราคาถอยเข้ามาในกรอบ pattern X%) — รอราคาถอยแตะจึง fill (R:R ดีขึ้น อาจพลาด trade)"
+
+inpEntryMode        = input.string(ENTRY_MODE_BREAKOUT, "Entry Mode",
+     options=[ENTRY_MODE_BREAKOUT, ENTRY_MODE_PULLBACK],
+     group="Entry Mode", tooltip=entryModeTip)
+inpPullbackMode     = input.string("% of Range", "Pullback Mode (Mode 2)",
+     options=["% of Price", "% of Range"], group="Entry Mode")
+inpPullbackPct      = input.float(0.4, " [% of Price] Pullback %", step=0.05, group="Entry Mode",
+     tooltip="ใช้เมื่อ Pullback Mode = % of Price — pullback = entry × X%")
+inpPullbackRangePct = input.float(30, " [% of Range] Pullback %",
+     minval=1, maxval=100, step=5, group="Entry Mode",
+     tooltip="ใช้เมื่อ Pullback Mode = % of Range — pullback level = HH - (HH-LL) × X% สำหรับ Buy")
+inpPlanExpireBars   = input.int(50, "Pending Order Expiry (bars, 0 = no expiry)",
+     minval=0, group="Entry Mode",
+     tooltip="ถ้าราคาไม่ถอยลงมาถึง pullback level ภายใน N แท่ง → ยกเลิก pending")
+
+// --- Risk Management (V10.1 style) ---
+ONER_SL_PCT  = "SL%"
+ONER_DIST    = "Distance"
+ONER_ATR     = "ATR"
+
+oneRTip = "เลือกฐานคำนวณ 1R (Risk Unit) ที่ใช้กับ SL, TP, R:R และ lot sizing:\nSL%    = 1R เท่ากับ % ของ pattern range (HH-LL)\nDistance = 1R เท่ากับระยะห่างคงที่ (หน่วยราคา)\nATR    = 1R เท่ากับ ATR × Multiplier"
+
+inpOneRBasis     = input.string(ONER_SL_PCT, "1R Basis",
+     options=[ONER_SL_PCT, ONER_DIST, ONER_ATR],
+     group="Risk Management", tooltip=oneRTip)
+inpOneRPctVal    = input.float(20, " [SL%] 1R = % of Pattern Range",
+     minval=1, maxval=100, step=5, group="Risk Management",
+     tooltip="1R = pattern range (HH-LL) × X%")
+inpOneRDistFix   = input.float(5, " [Distance] 1R = Fixed Distance",
+     minval=0.001, step=1, group="Risk Management",
+     tooltip="1R = ระยะห่างคงที่ (หน่วยราคาของสินทรัพย์)")
+inpOneRAtrPeriod = input.int(14, " [ATR] Period", minval=5, maxval=50, group="Risk Management")
+inpOneRAtrMult   = input.float(1.5, " [ATR] Multiplier",
+     minval=0.5, maxval=5, step=0.1, group="Risk Management",
+     tooltip="1R = ATR(period) × Multiplier")
+inpSlEdgeMode    = input.bool(false, "SL at Pattern Edge (override)",
+     group="Risk Management",
+     tooltip="เปิด = SL วางที่ขอบ pattern (LL สำหรับ Buy, HH สำหรับ Sell) เสมอ\n1R ด้านบนยังใช้เป็นหน่วยคำนวณ TP และ R accounting\nlot ยึด 1R เสมอ → ถ้า SL ห่างกว่า 1R จะขาดทุนเป็นทวีคูณ")
+inpRiskAmount    = input.float(500.0, "Risk per 1R ($)",
+     minval=0.01, group="Risk Management",
+     tooltip="เงินที่ยอมเสียต่อ 1R — lot ถูก size ให้ hit 1R = ขาดทุนเท่านี้")
+inpRRRatio       = input.float(2.0, "Risk : Reward (R:R)",
+     minval=0.1, step=0.1, group="Risk Management")
+inpPipValueRatio = input.float(100.0, "1 Lot Ratio",
+     group="Risk Management",
+     tooltip="ตัวคูณคำนวณ lot: lot = risk / (1R × ratio) — XAUUSD ใช้ ~100")
+inpSpreadPts     = input.float(0, "Spread (price)",
+     minval=0, step=0.0001, group="Risk Management",
+     tooltip="BUY: entry = base + spread, SELL: entry = base - spread\nSL/TP คำนวณจาก entry จริง (หลัง spread)")
+inpShowExitLines = input.bool(true, "Show Entry/SL/TP Visuals", group="Risk Management")
 
 // --- Display & Stats (สไตล์ V10.1) ---
 showStatsTable   = input.bool(true,  " Show Stats Table", group="Display & Stats")
@@ -315,41 +362,45 @@ if newLowConfirmed
 //  ถูกย้ายไปวาดในบล็อก position-open ด้านล่าง สไตล์เดียวกับ V10.1)
 
 // ==================================================================
-// === Exit System (SL / TP / Trailing / Structure Exit) ===
+// === Position Management (V10.1 Risk Management + Entry Modes) ===
+// === Exit เหลือแค่ SL / TP hit เท่านั้น (ไม่มี trailing / structure / reverse) ===
 // ==================================================================
 
-atrVal   = ta.atr(inpAtrLen)
-slBuffer = atrVal * inpSlBufMult
+// --- 1R distance helper (SL% ใช้ pattern range ที่ pass เข้ามา) ---
+atrOneR = ta.atr(inpOneRAtrPeriod)
+f_oneR(float patternRange) =>
+    inpOneRBasis == ONER_DIST ? inpOneRDistFix :
+     inpOneRBasis == ONER_ATR  ? atrOneR * inpOneRAtrMult :
+                                 patternRange * (inpOneRPctVal / 100.0)
 
-// --- Structure Exit conditions ---
-// Long ออกเมื่อ: โครงสร้าง Dow เพิ่งเปลี่ยนเป็น DOWNTREND หรือปิดต่ำกว่าเส้น Uptrend
-// Short ออกเมื่อ: โครงสร้าง Dow เพิ่งเปลี่ยนเป็น UPTREND หรือปิดสูงกว่าเส้น Downtrend
-bool downtrendFlip   = isDownTrend and not isDownTrend[1]
-bool uptrendFlip     = isUpTrend and not isUpTrend[1]
-bool upLineBreakRaw  = isUpTrend and not na(upLineVal) and close < upLineVal
-bool downLineBreakRaw= isDownTrend and not na(downLineVal) and close > downLineVal
-// ยิงเฉพาะแท่งแรกที่ break (ไม่ยิงซ้ำติดกัน)
-bool upLineBreak     = upLineBreakRaw and not upLineBreakRaw[1]
-bool downLineBreak   = downLineBreakRaw and not downLineBreakRaw[1]
-structExitLong  = downtrendFlip or upLineBreak
-structExitShort = uptrendFlip or downLineBreak
+// --- Position state ---
+var int    posDir     = 0     // 0 = flat, 1 = long, -1 = short
+var float  entryPrice = na
+var float  slPrice    = na
+var float  tpPrice    = na
+var float  initRisk   = na    // ระยะ 1R ตอนเข้า (|entry - SL|) ใช้คำนวณ R
+var float  lotSize    = na
+var int    tradeTime  = na
+var string tradeTag   = ""
+var line   slLine     = na
+var line   tpLine     = na
 
-// --- Virtual position state ---
-var int    posDir       = 0     // 0 = flat, 1 = long, -1 = short
-var float  entryPrice   = na
-var float  slPrice      = na
-var float  tpPrice      = na
-var float  initRisk     = na    // ระยะ 1R ตอนเข้า (|entry - SL แรก|) ใช้คำนวณ R
-var int    tradeTime    = na    // เวลาเปิดสถานะ (บันทึกลง stats)
-var string tradeTag     = ""    // strategy ที่เปิดสถานะนี้ (S1/S2/S3)
-var line   slLine       = na
-var line   tpLine       = na
+// --- Pending order state (สำหรับ Pullback mode) ---
+var int    pendingDir       = 0     // 0/1/-1
+var float  pendingEntry     = na
+var float  pendingSL        = na
+var float  pendingTP        = na
+var float  pendingRisk      = na
+var float  pendingLot       = na
+var int    pendingCreateBar = na
+var string pendingTag       = ""
+var line   pendingLine      = na
+var label  pendingLabel     = na
 
 bool exitLongEvent  = false
 bool exitShortEvent = false
 bool exitBySL       = false
 bool exitByTP       = false
-bool exitByStruct   = false
 string exitReason   = ""
 
 // --- บันทึกผลเทรดลง result arrays ---
@@ -367,63 +418,107 @@ f_recordResult(float pnlDist, float riskDist, int t, string tag) =>
         array.shift(resTpPts)
         array.shift(resTag)
 
-// --- Trailing Swing: เลื่อน SL ตาม swing ใหม่ ---
-if posDir == 1 and inpTpMode == TP_TRAIL and not na(isSwingLow)
-    newSL = isSwingLow - slBuffer
-    if newSL > slPrice
-        slPrice := newSL
-        if not na(slLine)
-            line.set_y1(slLine, slPrice)
-            line.set_y2(slLine, slPrice)
+// --- ยกเลิก pending order + ลบเส้น/label ---
+f_cancelPending(string reason) =>
+    if not na(pendingLine)
+        line.delete(pendingLine)
+    if not na(pendingLabel)
+        label.delete(pendingLabel)
+    if reason != "" and pendingDir != 0
+        label.new(bar_index, pendingEntry,
+             text="CANCEL PENDING (" + reason + ")",
+             style=pendingDir == 1 ? label.style_label_down : label.style_label_up,
+             color=color.new(color.gray, 25), textcolor=color.white, size=size.tiny)
+    pendingDir := 0
+    pendingEntry := na
+    pendingSL := na
+    pendingTP := na
+    pendingRisk := na
+    pendingLot := na
+    pendingCreateBar := na
+    pendingTag := ""
+    pendingLine := na
+    pendingLabel := na
 
-if posDir == -1 and inpTpMode == TP_TRAIL and not na(isSwingHigh)
-    newSL = isSwingHigh + slBuffer
-    if newSL < slPrice
-        slPrice := newSL
-        if not na(slLine)
-            line.set_y1(slLine, slPrice)
-            line.set_y2(slLine, slPrice)
+// --- เปิด position + วาด V10.1 entry visuals ---
+f_openPosition(int dir, float ent, float sl, float tp, float risk, float lot, string tag) =>
+    posDir := dir
+    entryPrice := ent
+    slPrice := sl
+    tpPrice := tp
+    initRisk := risk
+    lotSize := lot
+    tradeTime := time
+    tradeTag := tag
+    color mainCol = dir == 1 ? inpUpColor : inpDownColor
+    float rr = risk > 0 ? math.abs(tp - ent) / risk : na
+    if inpShowExitLines
+        // วงกลมโปร่งใหญ่ที่ราคา entry
+        label.new(bar_index, ent, text="",
+             style=label.style_circle, color=color.new(mainCol, 70), size=size.large)
+        // label ข้อมูล entry (พื้นดำ ตัวขาว) พร้อม Lot size และ Risk จริง
+        float actualRiskUSD = lot * risk * inpPipValueRatio
+        string infoTxt = (dir == 1 ? "BUY  (" : "SELL  (") + tag + ")\n" +
+             "Entry: " + str.tostring(ent, format.mintick) + "\n" +
+             "SL: " + str.tostring(sl, format.mintick) + "\n" +
+             "TP: " + str.tostring(tp, format.mintick) + "  (" + str.tostring(rr, "#.##") + "R)\n" +
+             "Lot: " + str.tostring(lot, "#.##") + "   Risk: $" + str.tostring(actualRiskUSD, "#.##")
+        label.new(bar_index, ent, text=infoTxt,
+             color=color.new(color.black, 65), textcolor=color.new(color.white, 20),
+             style=dir == 1 ? label.style_label_up : label.style_label_down, size=size.small)
+        // ลูกศรจาก entry -> TP (เขียว) และ entry -> SL (แดง)
+        line.new(bar_index, ent, bar_index, tp,
+             color=color.new(color.green, 60), width=1, style=line.style_arrow_right)
+        line.new(bar_index, ent, bar_index, sl,
+             color=color.new(color.red, 60), width=1, style=line.style_arrow_right)
+        // เส้นแนวนอนสั้น 6 แท่ง + ป้ายราคาที่ Entry / SL / TP
+        line.new(bar_index, ent, bar_index + 6, ent,
+             color=color.new(mainCol, 30), width=2)
+        line.new(bar_index, sl, bar_index + 6, sl,
+             color=color.new(color.red, 30), width=2)
+        line.new(bar_index, tp, bar_index + 6, tp,
+             color=color.new(color.green, 30), width=2)
+        label.new(bar_index + 6, ent, text=str.tostring(ent, format.mintick),
+             style=label.style_label_left, color=color.new(mainCol, 80),
+             textcolor=mainCol, size=size.tiny)
+        label.new(bar_index + 6, sl, text=str.tostring(sl, format.mintick),
+             style=label.style_label_left, color=color.new(color.red, 80),
+             textcolor=color.red, size=size.tiny)
+        label.new(bar_index + 6, tp, text=str.tostring(tp, format.mintick),
+             style=label.style_label_left, color=color.new(color.green, 80),
+             textcolor=color.green, size=size.tiny)
+        // Extending SL/TP lines (สำหรับ live level ระหว่างถือไม้)
+        slLine := line.new(bar_index, sl, bar_index + 1, sl,
+             color=color.red, style=line.style_dashed, width=1)
+        tpLine := line.new(bar_index, tp, bar_index + 1, tp,
+             color=color.green, style=line.style_dashed, width=1)
 
-// --- Exit check (เช็คตอนแท่งปิดยืนยัน: SL ก่อน -> TP -> Structure -> Reverse) ---
+// ==================================================================
+// === Exit check (SL/TP เท่านั้น) ===
+// ==================================================================
 if barstate.isconfirmed and posDir == 1
     if low <= slPrice
         exitLongEvent := true
         exitBySL := true
-        exitReason := inpTpMode == TP_TRAIL ? "Trailing SL hit" : "SL hit"
-    else if inpTpMode != TP_TRAIL and not na(tpPrice) and high >= tpPrice
+        exitReason := "SL hit"
+    else if not na(tpPrice) and high >= tpPrice
         exitLongEvent := true
         exitByTP := true
         exitReason := "TP hit"
-    else if structExitLong
-        exitLongEvent := true
-        exitByStruct := true
-        exitReason := upLineBreak ? "Structure: uptrend line broken" : "Structure: Dow flipped to DOWNTREND"
-    else if sellSignal
-        exitLongEvent := true
-        exitByStruct := true
-        exitReason := "Reverse signal (Sell)"
 
 if barstate.isconfirmed and posDir == -1
     if high >= slPrice
         exitShortEvent := true
         exitBySL := true
-        exitReason := inpTpMode == TP_TRAIL ? "Trailing SL hit" : "SL hit"
-    else if inpTpMode != TP_TRAIL and not na(tpPrice) and low <= tpPrice
+        exitReason := "SL hit"
+    else if not na(tpPrice) and low <= tpPrice
         exitShortEvent := true
         exitByTP := true
         exitReason := "TP hit"
-    else if structExitShort
-        exitShortEvent := true
-        exitByStruct := true
-        exitReason := downLineBreak ? "Structure: downtrend line broken" : "Structure: Dow flipped to UPTREND"
-    else if buySignal
-        exitShortEvent := true
-        exitByStruct := true
-        exitReason := "Reverse signal (Buy)"
 
 // --- Execute exit: วงกลมส้ม + tooltip เหตุผล + บันทึก stats แล้วเคลียร์สถานะ ---
 if exitLongEvent
-    exitPx = exitBySL ? slPrice : exitByTP ? tpPrice : close
+    exitPx = exitBySL ? slPrice : tpPrice
     f_recordResult(exitPx - entryPrice, initRisk, tradeTime, tradeTag)
     label.new(bar_index, na,
          style=label.style_circle,
@@ -438,11 +533,12 @@ if exitLongEvent
     slPrice := na
     tpPrice := na
     initRisk := na
+    lotSize := na
     slLine := na
     tpLine := na
 
 if exitShortEvent
-    exitPx = exitBySL ? slPrice : exitByTP ? tpPrice : close
+    exitPx = exitBySL ? slPrice : tpPrice
     f_recordResult(entryPrice - exitPx, initRisk, tradeTime, tradeTag)
     label.new(bar_index, na,
          style=label.style_circle,
@@ -457,140 +553,125 @@ if exitShortEvent
     slPrice := na
     tpPrice := na
     initRisk := na
+    lotSize := na
     slLine := na
     tpLine := na
 
-// --- Entry: เปิดสถานะใหม่เมื่อ flat (รวมกรณี reverse ที่เพิ่งออกแท่งเดียวกัน) ---
-if barstate.isconfirmed and buySignal and posDir == 0
-    posDir := 1
-    entryPrice := close
-    tradeTime := time
-    tradeTag := "LL→HH"
-    // SL: ใต้ Swing Low ล่าสุด - buffer (ถ้าผิดปกติใช้ ATR เต็มแทน)
-    slPrice := gLastLow - slBuffer
-    if na(slPrice) or slPrice >= entryPrice
-        slPrice := entryPrice - atrVal
-    initRisk := entryPrice - slPrice
-    // TP ตามโหมด
-    if inpTpMode == TP_RR
-        tpPrice := entryPrice + initRisk * inpRR
-    else if inpTpMode == TP_SWING
-        // เป้า = Swing High เดิม; ถ้าราคา break ไปแล้วใช้ measured move (HH-HL) แทน
-        tpPrice := gLastHigh > entryPrice ? gLastHigh : entryPrice + (gLastHigh - gLastLow)
-        if na(tpPrice) or tpPrice <= entryPrice
-            tpPrice := entryPrice + initRisk * inpRR
+// ==================================================================
+// === Pending order fill / expire ===
+// ==================================================================
+// ราคาถอยเข้ามาถึง pullback level -> fill (แปลง pending เป็น position)
+if barstate.isconfirmed and pendingDir == 1 and posDir == 0
+    if low <= pendingEntry
+        // Fill ที่ราคา pendingEntry (สมมติ limit order เต็ม)
+        f_openPosition(1, pendingEntry, pendingSL, pendingTP, pendingRisk, pendingLot, pendingTag)
+        f_cancelPending("")
+    else if inpPlanExpireBars > 0 and bar_index - pendingCreateBar >= inpPlanExpireBars
+        f_cancelPending("expired")
+
+if barstate.isconfirmed and pendingDir == -1 and posDir == 0
+    if high >= pendingEntry
+        f_openPosition(-1, pendingEntry, pendingSL, pendingTP, pendingRisk, pendingLot, pendingTag)
+        f_cancelPending("")
+    else if inpPlanExpireBars > 0 and bar_index - pendingCreateBar >= inpPlanExpireBars
+        f_cancelPending("expired")
+
+// ยกเลิก pending ถ้าสัญญาณตรงข้ามยิงตามมา
+if pendingDir == 1 and sellSignal
+    f_cancelPending("opposite signal")
+if pendingDir == -1 and buySignal
+    f_cancelPending("opposite signal")
+
+// ==================================================================
+// === Entry: สร้าง position (Breakout) หรือ pending order (Pullback) ===
+// ==================================================================
+if barstate.isconfirmed and buySignal and posDir == 0 and pendingDir == 0
+    float patHH   = newHighPrice
+    float patLL   = llPrice
+    float patRng  = patHH - patLL
+    float oneR    = f_oneR(patRng)
+    // Entry base price
+    float baseEnt = 0
+    if inpEntryMode == ENTRY_MODE_BREAKOUT
+        baseEnt := close
+    else  // Pullback
+        baseEnt := inpPullbackMode == "% of Range" ? patHH - patRng * (inpPullbackRangePct / 100.0) : patHH - patHH * inpPullbackPct / 100.0
+    // Spread-adjusted entry (BUY = +spread)
+    float ent = baseEnt + inpSpreadPts
+    // SL (edge mode override): LL, else ent - 1R
+    float sl = inpSlEdgeMode ? patLL : ent - oneR
+    float risk = math.abs(ent - sl)
+    // TP: ent + 1R × RR
+    float tp = ent + oneR * inpRRRatio
+    // Lot: riskAmount / (1R × pipValueRatio)
+    float lot = oneR > 0 ? inpRiskAmount / (oneR * inpPipValueRatio) : 0
+    if inpEntryMode == ENTRY_MODE_BREAKOUT
+        f_openPosition(1, ent, sl, tp, risk, lot, "LL→HH")
     else
-        tpPrice := na
-    // === V10.1-style entry visuals ===
-    if inpShowExitLines
-        float rr = not na(tpPrice) and initRisk > 0 ? (tpPrice - entryPrice) / initRisk : na
-        // Feature: วงกลมโปร่งใหญ่ที่ราคา entry
-        label.new(bar_index, entryPrice, text="",
-             style=label.style_circle, color=color.new(inpUpColor, 70), size=size.large)
-        // Feature: label ข้อมูล entry (พื้นดำ ตัวขาว)
-        string infoTxt = "BUY  (LL→HH)\nEntry: " + str.tostring(entryPrice, format.mintick) +
-             "\nSL: " + str.tostring(slPrice, format.mintick) +
-             (not na(tpPrice) ? "\nTP: " + str.tostring(tpPrice, format.mintick) + "  (" + str.tostring(rr, "#.##") + "R)" : "\nExit: Trailing SL")
-        label.new(bar_index, entryPrice, text=infoTxt,
-             color=color.new(color.black, 65), textcolor=color.new(color.white, 20),
+        // สร้าง pending order
+        pendingDir       := 1
+        pendingEntry     := ent
+        pendingSL        := sl
+        pendingTP        := tp
+        pendingRisk      := risk
+        pendingLot       := lot
+        pendingCreateBar := bar_index
+        pendingTag       := "LL→HH"
+        pendingLine := line.new(bar_index, ent, bar_index + 20, ent,
+             color=inpUpColor, style=line.style_dashed, width=2)
+        pendingLabel := label.new(bar_index, ent,
+             text="PENDING BUY (LL→HH)\nEntry: " + str.tostring(ent, format.mintick) +
+                 "\nSL: " + str.tostring(sl, format.mintick) +
+                 "\nTP: " + str.tostring(tp, format.mintick) +
+                 "\nLot: " + str.tostring(lot, "#.##"),
+             color=color.new(inpUpColor, 30), textcolor=color.white,
              style=label.style_label_up, size=size.small)
-        // Feature: ลูกศรจาก entry -> TP (เขียว) และ entry -> SL (แดง)
-        if not na(tpPrice)
-            line.new(bar_index, entryPrice, bar_index, tpPrice,
-                 color=color.new(color.green, 60), width=1, style=line.style_arrow_right)
-        line.new(bar_index, entryPrice, bar_index, slPrice,
-             color=color.new(color.red, 60), width=1, style=line.style_arrow_right)
-        // Feature: เส้นแนวนอนสั้น 6 แท่ง + ป้ายราคาที่ Entry / SL / TP
-        line.new(bar_index, entryPrice, bar_index + 6, entryPrice,
-             color=color.new(inpUpColor, 30), width=2)
-        line.new(bar_index, slPrice, bar_index + 6, slPrice,
-             color=color.new(color.red, 30), width=2)
-        label.new(bar_index + 6, entryPrice, text=str.tostring(entryPrice, format.mintick),
-             style=label.style_label_left, color=color.new(inpUpColor, 80),
-             textcolor=inpUpColor, size=size.tiny)
-        label.new(bar_index + 6, slPrice, text=str.tostring(slPrice, format.mintick),
-             style=label.style_label_left, color=color.new(color.red, 80),
-             textcolor=color.red, size=size.tiny)
-        if not na(tpPrice)
-            line.new(bar_index, tpPrice, bar_index + 6, tpPrice,
-                 color=color.new(color.green, 30), width=2)
-            label.new(bar_index + 6, tpPrice, text=str.tostring(tpPrice, format.mintick),
-                 style=label.style_label_left, color=color.new(color.green, 80),
-                 textcolor=color.green, size=size.tiny)
-        // Extending SL/TP lines (สำหรับ live level ระหว่างถือไม้ + trailing SL)
-        slLine := line.new(bar_index, slPrice, bar_index + 1, slPrice,
-             color=color.red, style=line.style_dashed, width=1)
-        if not na(tpPrice)
-            tpLine := line.new(bar_index, tpPrice, bar_index + 1, tpPrice,
-                 color=color.green, style=line.style_dashed, width=1)
 
-if barstate.isconfirmed and sellSignal and posDir == 0
-    posDir := -1
-    entryPrice := close
-    tradeTime := time
-    tradeTag := "HH→LL"
-    // SL: เหนือ Swing High ล่าสุด + buffer
-    slPrice := gLastHigh + slBuffer
-    if na(slPrice) or slPrice <= entryPrice
-        slPrice := entryPrice + atrVal
-    initRisk := slPrice - entryPrice
-    if inpTpMode == TP_RR
-        tpPrice := entryPrice - initRisk * inpRR
-    else if inpTpMode == TP_SWING
-        tpPrice := gLastLow < entryPrice ? gLastLow : entryPrice - (gLastHigh - gLastLow)
-        if na(tpPrice) or tpPrice >= entryPrice
-            tpPrice := entryPrice - initRisk * inpRR
+if barstate.isconfirmed and sellSignal and posDir == 0 and pendingDir == 0
+    float patHH   = hhPrice
+    float patLL   = newLowPrice
+    float patRng  = patHH - patLL
+    float oneR    = f_oneR(patRng)
+    float baseEnt = 0
+    if inpEntryMode == ENTRY_MODE_BREAKOUT
+        baseEnt := close
     else
-        tpPrice := na
-    // === V10.1-style entry visuals ===
-    if inpShowExitLines
-        float rr = not na(tpPrice) and initRisk > 0 ? (entryPrice - tpPrice) / initRisk : na
-        // วงกลมโปร่งใหญ่ที่ราคา entry
-        label.new(bar_index, entryPrice, text="",
-             style=label.style_circle, color=color.new(inpDownColor, 70), size=size.large)
-        // label ข้อมูล entry (พื้นดำ ตัวขาว)
-        string infoTxt = "SELL  (HH→LL)\nEntry: " + str.tostring(entryPrice, format.mintick) +
-             "\nSL: " + str.tostring(slPrice, format.mintick) +
-             (not na(tpPrice) ? "\nTP: " + str.tostring(tpPrice, format.mintick) + "  (" + str.tostring(rr, "#.##") + "R)" : "\nExit: Trailing SL")
-        label.new(bar_index, entryPrice, text=infoTxt,
-             color=color.new(color.black, 65), textcolor=color.new(color.white, 20),
+        baseEnt := inpPullbackMode == "% of Range" ? patLL + patRng * (inpPullbackRangePct / 100.0) : patLL + patLL * inpPullbackPct / 100.0
+    // Spread-adjusted (SELL = -spread)
+    float ent = baseEnt - inpSpreadPts
+    float sl = inpSlEdgeMode ? patHH : ent + oneR
+    float risk = math.abs(sl - ent)
+    float tp = ent - oneR * inpRRRatio
+    float lot = oneR > 0 ? inpRiskAmount / (oneR * inpPipValueRatio) : 0
+    if inpEntryMode == ENTRY_MODE_BREAKOUT
+        f_openPosition(-1, ent, sl, tp, risk, lot, "HH→LL")
+    else
+        pendingDir       := -1
+        pendingEntry     := ent
+        pendingSL        := sl
+        pendingTP        := tp
+        pendingRisk      := risk
+        pendingLot       := lot
+        pendingCreateBar := bar_index
+        pendingTag       := "HH→LL"
+        pendingLine := line.new(bar_index, ent, bar_index + 20, ent,
+             color=inpDownColor, style=line.style_dashed, width=2)
+        pendingLabel := label.new(bar_index, ent,
+             text="PENDING SELL (HH→LL)\nEntry: " + str.tostring(ent, format.mintick) +
+                 "\nSL: " + str.tostring(sl, format.mintick) +
+                 "\nTP: " + str.tostring(tp, format.mintick) +
+                 "\nLot: " + str.tostring(lot, "#.##"),
+             color=color.new(inpDownColor, 30), textcolor=color.white,
              style=label.style_label_down, size=size.small)
-        // ลูกศรจาก entry -> TP (เขียว) และ entry -> SL (แดง)
-        if not na(tpPrice)
-            line.new(bar_index, entryPrice, bar_index, tpPrice,
-                 color=color.new(color.green, 60), width=1, style=line.style_arrow_right)
-        line.new(bar_index, entryPrice, bar_index, slPrice,
-             color=color.new(color.red, 60), width=1, style=line.style_arrow_right)
-        // เส้นแนวนอนสั้น 6 แท่ง + ป้ายราคา
-        line.new(bar_index, entryPrice, bar_index + 6, entryPrice,
-             color=color.new(inpDownColor, 30), width=2)
-        line.new(bar_index, slPrice, bar_index + 6, slPrice,
-             color=color.new(color.red, 30), width=2)
-        label.new(bar_index + 6, entryPrice, text=str.tostring(entryPrice, format.mintick),
-             style=label.style_label_left, color=color.new(inpDownColor, 80),
-             textcolor=inpDownColor, size=size.tiny)
-        label.new(bar_index + 6, slPrice, text=str.tostring(slPrice, format.mintick),
-             style=label.style_label_left, color=color.new(color.red, 80),
-             textcolor=color.red, size=size.tiny)
-        if not na(tpPrice)
-            line.new(bar_index, tpPrice, bar_index + 6, tpPrice,
-                 color=color.new(color.green, 30), width=2)
-            label.new(bar_index + 6, tpPrice, text=str.tostring(tpPrice, format.mintick),
-                 style=label.style_label_left, color=color.new(color.green, 80),
-                 textcolor=color.green, size=size.tiny)
-        // Extending SL/TP lines
-        slLine := line.new(bar_index, slPrice, bar_index + 1, slPrice,
-             color=color.red, style=line.style_dashed, width=1)
-        if not na(tpPrice)
-            tpLine := line.new(bar_index, tpPrice, bar_index + 1, tpPrice,
-                 color=color.green, style=line.style_dashed, width=1)
 
-// --- ยืดเส้น Entry/SL/TP ตามแท่งขณะถือสถานะ ---
+// --- ยืดเส้น SL/TP ตามแท่งขณะถือสถานะ + ยืดเส้น pending ---
 if posDir != 0
     if not na(slLine)
         line.set_x2(slLine, bar_index)
     if not na(tpLine)
         line.set_x2(tpLine, bar_index)
+if pendingDir != 0 and not na(pendingLine)
+    line.set_x2(pendingLine, bar_index + 3)
 
 // === Info Panel (Table) ===
 if inpShowPanel and barstate.islast and hCount >= 2 and lCount >= 2
@@ -619,8 +700,9 @@ if inpShowPanel and barstate.islast and hCount >= 2 and lCount >= 2
     table.cell(panel, 0, 5, "Strategy", text_color=color.aqua, text_size=size.small, text_halign=text.align_left)
     table.cell(panel, 1, 5, inpEnableEntry ? "Swing Reversal (LL→HH / HH→LL)" : "OFF", text_color=color.aqua, text_size=size.small, text_halign=text.align_left)
 
-    table.cell(panel, 0, 6, "TP Mode", text_color=color.aqua, text_size=size.small, text_halign=text.align_left)
-    table.cell(panel, 1, 6, inpTpMode + (inpTpMode == TP_RR ? " (1:" + str.tostring(inpRR) + ")" : ""), text_color=color.aqua, text_size=size.small, text_halign=text.align_left)
+    string oneRLabel = inpOneRBasis == ONER_DIST ? "Distance " + str.tostring(inpOneRDistFix) : inpOneRBasis == ONER_ATR ? "ATR×" + str.tostring(inpOneRAtrMult) : "SL% " + str.tostring(inpOneRPctVal, "#.#") + "%"
+    table.cell(panel, 0, 6, "Entry / 1R", text_color=color.aqua, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 1, 6, inpEntryMode + "  ·  1R: " + oneRLabel + "  ·  RR 1:" + str.tostring(inpRRRatio, "#.#"), text_color=color.aqua, text_size=size.small, text_halign=text.align_left)
 
     posText  = posDir == 1 ? "LONG @ " + str.tostring(entryPrice, format.mintick) : posDir == -1 ? "SHORT @ " + str.tostring(entryPrice, format.mintick) : "FLAT"
     posColor = posDir == 1 ? inpUpColor : posDir == -1 ? inpDownColor : color.gray
@@ -780,7 +862,7 @@ if showStatsTable and barstate.islast
     else if statMode == "3. เจาะจงเดือนและปี (Specific Month)"
         periodStr := statTargetM + " " + str.tostring(actualTargetY)
     string stratShort = inpEnableEntry ? "Swing Reversal" : "OFF"
-    string tpModeStr  = inpTpMode == TP_RR ? "R:R 1:" + str.tostring(inpRR, "#.#") : inpTpMode == TP_SWING ? "Swing Target" : "Trailing Swing"
+    string tpModeStr  = inpEntryMode + "  ·  RR 1:" + str.tostring(inpRRRatio, "#.#") + (inpSlEdgeMode ? "  ·  Edge SL" : "")
     table.cell(statsTable, 0, 0,  "◆  DOW THEORY PERFORMANCE", text_color=lxTitleTx, text_size=size.small, bgcolor=lxHeadBg)
     table.cell(statsTable, 0, 1,  periodStr + "  ·  " + syminfo.ticker + " " + timeframe.period, text_color=lxMuted, text_size=size.tiny, bgcolor=lxSubBg)
     table.cell(statsTable, 0, 2,  "Strategy",   text_color=lxMuted, text_size=size.tiny,  bgcolor=lxRowA, text_halign=text.align_left)
@@ -1070,8 +1152,7 @@ alertcondition(trendState == "SIDEWAY / CORRECTION", title="Sideway Detected", m
 alertcondition(buySignal,  title="Swing Reversal Buy",  message="Dow Theory Swing Reversal: LL -> HH confirmed - BUY")
 alertcondition(sellSignal, title="Swing Reversal Sell", message="Dow Theory Swing Reversal: HH -> LL confirmed - SELL")
 
-alertcondition(exitLongEvent,  title="Exit Long",        message="Dow Theory: EXIT LONG (SL/TP/Structure)")
-alertcondition(exitShortEvent, title="Exit Short",       message="Dow Theory: EXIT SHORT (SL/TP/Structure)")
-alertcondition(exitBySL,       title="Exit - SL Hit",    message="Dow Theory: Exit - Stop Loss hit")
-alertcondition(exitByTP,       title="Exit - TP Hit",    message="Dow Theory: Exit - Take Profit hit")
-alertcondition(exitByStruct,   title="Exit - Structure", message="Dow Theory: Exit - structure break / reverse signal")
+alertcondition(exitLongEvent,  title="Exit Long",     message="Dow Theory: EXIT LONG (SL/TP hit)")
+alertcondition(exitShortEvent, title="Exit Short",    message="Dow Theory: EXIT SHORT (SL/TP hit)")
+alertcondition(exitBySL,       title="Exit - SL Hit", message="Dow Theory: Exit - Stop Loss hit")
+alertcondition(exitByTP,       title="Exit - TP Hit", message="Dow Theory: Exit - Take Profit hit")
