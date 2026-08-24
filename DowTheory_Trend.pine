@@ -8,7 +8,7 @@
 //    - Buy  : เจอ LL ก่อน แล้วต่อมาเกิด HH -> เข้า Buy ที่แท่งที่ HH confirm
 //    - Sell : เจอ HH ก่อน แล้วต่อมาเกิด LL -> เข้า Sell ที่แท่งที่ LL confirm
 //    วาดเส้นเล็ก ๆ ที่ระดับราคาเปิดออเดอร์เป็น marker
-// 5. Entry Mode สไตล์ V10.1: Breakout (เข้าทันที) / Pullback (pending order)
+// 5. Entry Mode สไตล์ V10.1: Market (เข้าทันที) / Pullback (pending order)
 //    + Risk Management: 1R Basis (SL% / Distance / ATR), SL Edge Mode,
 //    Risk per 1R ($) → คำนวณ Lot อัตโนมัติ, R:R Ratio, Spread
 //    Exit เหลือแค่ SL / TP hit เท่านั้น
@@ -32,14 +32,14 @@ inpShowPanel    = input.bool(true, "Show Info Panel")
 inpEnableEntry     = input.bool(true, "Enable Swing Reversal Entries", group="Entry Signals")
 inpShowPatternBox  = input.bool(true, "Show LL→HH / HH→LL Pattern Box", group="Entry Signals", tooltip="วาดกรอบครอบช่วงระหว่างจุด LL กับ HH (สำหรับ Buy) หรือ HH กับ LL (สำหรับ Sell) เพื่อให้สังเกต pattern ได้ง่าย")
 
-// --- Entry Mode (V10.1 style: Breakout / Pullback) ---
-ENTRY_MODE_BREAKOUT = "1. Breakout"
+// --- Entry Mode (V10.1 style: Market / Pullback) ---
+ENTRY_MODE_MARKET = "1. Market"
 ENTRY_MODE_PULLBACK = "2. Pullback"
 
-entryModeTip = "1. Breakout — เข้าที่ close ของแท่งที่ pattern confirm ทันที (เร็ว แต่ R:R แคบ)\n2. Pullback — สร้าง pending order ที่ระดับ pullback (ราคาถอยเข้ามาในกรอบ pattern X%) — รอราคาถอยแตะจึง fill (R:R ดีขึ้น อาจพลาด trade)"
+entryModeTip = "1. Market — เข้าที่ close ของแท่งที่ pattern confirm ทันที (เร็ว แต่ R:R แคบ)\n2. Pullback — สร้าง pending order ที่ระดับ pullback (ราคาถอยเข้ามาในกรอบ pattern X%) — รอราคาถอยแตะจึง fill (R:R ดีขึ้น อาจพลาด trade)"
 
-inpEntryMode        = input.string(ENTRY_MODE_BREAKOUT, "Entry Mode",
-     options=[ENTRY_MODE_BREAKOUT, ENTRY_MODE_PULLBACK],
+inpEntryMode        = input.string(ENTRY_MODE_MARKET, "Entry Mode",
+     options=[ENTRY_MODE_MARKET, ENTRY_MODE_PULLBACK],
      group="Entry Mode", tooltip=entryModeTip)
 inpPullbackMode     = input.string("% of Range", "Pullback Mode (Mode 2)",
      options=["% of Price", "% of Range"], group="Entry Mode")
@@ -635,7 +635,7 @@ if fillBuy or fillSell or pendExpired or pendOpposite
     pendingLabel := na
 
 // ==================================================================
-// === Entry: สร้าง position (Breakout) หรือ pending order (Pullback) ===
+// === Entry: สร้าง position (Market) หรือ pending order (Pullback) ===
 // ==================================================================
 // --- BUY SIGNAL (LL→HH pattern): normal = LONG, reverse = SHORT ---
 if barstate.isconfirmed and buySignal and posDir == 0 and pendingDir == 0
@@ -677,7 +677,7 @@ if barstate.isconfirmed and buySignal and posDir == 0 and pendingDir == 0
              color=color.new(pcol, 30), textcolor=color.white,
              style=tradeDir == 1 ? label.style_label_up : label.style_label_down, size=size.small)
     else
-        // Breakout หรือ pullback level ถูกผ่านมาแล้ว -> market entry ที่ close ของแท่ง confirm
+        // Market entry หรือ pullback level ถูกผ่านมาแล้ว -> เข้าที่ close ของแท่ง confirm
         float ent = tradeDir == 1 ? close + inpSpreadPts : close - inpSpreadPts
         float sl = tradeDir == 1 ? (inpSlEdgeMode ? patLL : ent - oneR) : (inpSlEdgeMode ? patHH : ent + oneR)
         float risk = math.abs(ent - sl)
@@ -734,7 +734,7 @@ if barstate.isconfirmed and sellSignal and posDir == 0 and pendingDir == 0
              color=color.new(pcol, 30), textcolor=color.white,
              style=tradeDir == 1 ? label.style_label_up : label.style_label_down, size=size.small)
     else
-        // Breakout หรือ pullback level ถูกผ่านมาแล้ว -> market entry ที่ close ของแท่ง confirm
+        // Market entry หรือ pullback level ถูกผ่านมาแล้ว -> เข้าที่ close ของแท่ง confirm
         float ent = tradeDir == 1 ? close + inpSpreadPts : close - inpSpreadPts
         float sl = tradeDir == 1 ? (inpSlEdgeMode ? patLL : ent - oneR) : (inpSlEdgeMode ? patHH : ent + oneR)
         float risk = math.abs(ent - sl)
