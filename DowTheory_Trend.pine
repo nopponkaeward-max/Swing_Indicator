@@ -1,19 +1,19 @@
 // This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
 // © Dow Theory EA - Converted to Pine Script v6
-// EA Dow Theory - Auto Swing + Trendline + Entry/Exit Strategies + Stats
+// EA Dow Theory - Auto Swing + Trendline + Swing Reversal Entry + Stats
 // 1. หา Swing High/Low อัตโนมัติ (Fractal)
 // 2. วาด Trendline เขียว(ขึ้น) แดง(ลง)
 // 3. บอกสถานะ Trend ปัจจุบัน HH/HL/LH/LL
-// 4. สัญญาณเข้าเทรด 3 กลยุทธ์ (เลือกจาก dropdown)
-//    - Strategy 1: Pullback to Trendline
-//    - Strategy 2: Break of Structure (BOS)
-//    - Strategy 3: Trendline Break Reversal
+// 4. สัญญาณเข้าเทรดแบบ Swing Reversal (sequence ของ swing ที่ confirm):
+//    - Buy  : เจอ LL ก่อน แล้วต่อมาเกิด HH -> เข้า Buy ที่แท่งที่ HH confirm
+//    - Sell : เจอ HH ก่อน แล้วต่อมาเกิด LL -> เข้า Sell ที่แท่งที่ LL confirm
+//    วาดเส้นเล็ก ๆ ที่ระดับราคาเปิดออเดอร์เป็น marker
 // 5. Exit system: SL (swing + ATR buffer), TP (Swing Target / Risk:Reward /
 //    Trailing Swing), Structure Exit เมื่อโครงสร้าง Dow เปลี่ยน
 // 6. Stats tables สไตล์ V10.1: Main Stats / By Day / Daily Log / Monthly
 
 //@version=6
-indicator("Dow Theory Trend", overlay=true, max_lines_count=500, max_labels_count=500)
+indicator("Dow Theory Trend", overlay=true, max_lines_count=500, max_labels_count=500, max_boxes_count=500)
 
 // === Inputs ===
 inpLeftRight    = input.int(3, "Swing Left/Right Bars (Fractal)", minval=1, maxval=20)
@@ -24,20 +24,12 @@ inpUpColor      = input.color(color.lime, "Uptrend Color")
 inpDownColor    = input.color(color.red, "Downtrend Color")
 inpShowPanel    = input.bool(true, "Show Info Panel")
 
-// --- Strategy Selector ---
-STRAT_NONE = "None"
-STRAT_1    = "Strategy 1: Pullback to Trendline"
-STRAT_2    = "Strategy 2: Break of Structure (BOS)"
-STRAT_3    = "Strategy 3: Trendline Break Reversal"
-STRAT_ALL  = "All Strategies"
-
-inpStrategy = input.string(STRAT_2, "Entry Strategy",
-     options=[STRAT_NONE, STRAT_1, STRAT_2, STRAT_3, STRAT_ALL],
-     group="Entry Signals")
-
-useS1 = inpStrategy == STRAT_1 or inpStrategy == STRAT_ALL
-useS2 = inpStrategy == STRAT_2 or inpStrategy == STRAT_ALL
-useS3 = inpStrategy == STRAT_3 or inpStrategy == STRAT_ALL
+// --- Entry Signals: Swing Reversal ---
+// Buy  : LL แล้วตามด้วย HH -> เข้า Buy เมื่อ HH confirm
+// Sell : HH แล้วตามด้วย LL -> เข้า Sell เมื่อ LL confirm
+inpEnableEntry     = input.bool(true, "Enable Swing Reversal Entries", group="Entry Signals")
+inpEntryLineBars   = input.int(10, "Entry Marker Line Length (bars)", minval=1, maxval=50, group="Entry Signals", tooltip="ความยาวเส้นเล็ก ๆ ที่วาดตรงระดับราคาเปิดออเดอร์ (Buy = เขียว, Sell = แดง)")
+inpShowPatternBox  = input.bool(true, "Show LL→HH / HH→LL Pattern Box", group="Entry Signals", tooltip="วาดกรอบครอบช่วงระหว่างจุด LL กับ HH (สำหรับ Buy) หรือ HH กับ LL (สำหรับ Sell) เพื่อให้สังเกต pattern ได้ง่าย")
 
 // --- Exit Settings ---
 TP_SWING = "Swing Target"
@@ -245,54 +237,110 @@ if hCount >= 2 and lCount >= 2
 // === Entry Signals ===
 // ==================================================================
 
-// --- Strategy 1: Pullback to Trendline ---
-// Uptrend ยืนยันแล้ว + ราคาย่อลงมาแตะเส้น Uptrend แล้วปิดกลับเหนือเส้น -> Buy
-// Downtrend ยืนยันแล้ว + ราคาดีดขึ้นไปแตะเส้น Downtrend แล้วปิดกลับใต้เส้น -> Sell
-s1BuyRaw  = isUpTrend and not na(upLineVal) and low <= upLineVal and close > upLineVal
-s1SellRaw = isDownTrend and not na(downLineVal) and high >= downLineVal and close < downLineVal
-s1Buy  = s1BuyRaw and not s1BuyRaw[1]    // ยิงเฉพาะแท่งแรกที่แตะ ไม่ยิงซ้ำติดกัน
-s1Sell = s1SellRaw and not s1SellRaw[1]
+// --- Swing sequence tracker ---
+// เก็บชนิดของ swing ล่าสุด (HH/LH/HL/LL) + bar/price ของ LL และ HH ล่าสุด
+// เพื่อตรวจจับ pattern:
+//   ...LL (แล้วตามมาด้วย) HH  -> BUY  ที่แท่ง HH confirm
+//   ...HH (แล้วตามมาด้วย) LL  -> SELL ที่แท่ง LL confirm
+var string lastHighType = ""   // "HH" หรือ "LH"
+var string lastLowType  = ""   // "HL" หรือ "LL"
+var int    llBar        = na   // bar_index ของ pivot LL ล่าสุด
+var float  llPrice      = na   // ราคาของ pivot LL ล่าสุด
+var int    hhBar        = na   // bar_index ของ pivot HH ล่าสุด
+var float  hhPrice      = na   // ราคาของ pivot HH ล่าสุด
 
-// --- Strategy 2: Break of Structure (BOS) ---
-// สถานะเพิ่งเปลี่ยนเป็น UPTREND ครั้งแรก (แท่งที่ครบ HH+HL) -> Buy
-// สถานะเพิ่งเปลี่ยนเป็น DOWNTREND ครั้งแรก (แท่งที่ครบ LL+LH) -> Sell
-s2Buy  = isUpTrend and not isUpTrend[1]
-s2Sell = isDownTrend and not isDownTrend[1]
+// ระบุว่ามี swing high/low ใหม่เพิ่ง confirm ในแท่งนี้หรือไม่
+bool newHighConfirmed = not na(isSwingHigh) and hCount >= 2
+bool newLowConfirmed  = not na(isSwingLow)  and lCount >= 2
 
-// --- Strategy 3: Trendline Break Reversal ---
-// เดิมเป็น Uptrend แล้วราคาปิดทะลุลงใต้เส้น Uptrend -> Sell (สัญญาณกลับตัว)
-// เดิมเป็น Downtrend แล้วราคาปิดทะลุขึ้นเหนือเส้น Downtrend -> Buy (สัญญาณกลับตัว)
-s3SellRaw = isUpTrend and not na(upLineVal) and close < upLineVal
-s3BuyRaw  = isDownTrend and not na(downLineVal) and close > downLineVal
-s3Sell = s3SellRaw and not s3SellRaw[1]
-s3Buy  = s3BuyRaw and not s3BuyRaw[1]
+// จัดประเภท swing ที่เพิ่ง confirm (เทียบกับ swing เดียวกันก่อนหน้า)
+string newHighType = ""
+float  newHighPrice = na
+int    newHighBar   = na
+if newHighConfirmed
+    newHighPrice := array.get(swingHighPrices, hCount - 1)
+    newHighBar   := array.get(swingHighBars, hCount - 1)
+    float prevH = array.get(swingHighPrices, hCount - 2)
+    newHighType := newHighPrice > prevH ? "HH" : "LH"
 
-// --- รวมสัญญาณตาม dropdown ---
-buySignal  = (useS1 and s1Buy) or (useS2 and s2Buy) or (useS3 and s3Buy)
-sellSignal = (useS1 and s1Sell) or (useS2 and s2Sell) or (useS3 and s3Sell)
+string newLowType = ""
+float  newLowPrice = na
+int    newLowBar   = na
+if newLowConfirmed
+    newLowPrice := array.get(swingLowPrices, lCount - 1)
+    newLowBar   := array.get(swingLowBars, lCount - 1)
+    float prevL = array.get(swingLowPrices, lCount - 2)
+    newLowType := newLowPrice > prevL ? "HL" : "LL"
 
-// --- วาด label วงกลมเล็กที่จุดเข้าออเดอร์ ---
+// สัญญาณต้องยิง "ก่อน" update state เพื่อดูว่า swing ก่อนหน้า (ในฝั่งตรงข้าม) เป็นอะไร
+buySignal  = inpEnableEntry and newHighConfirmed and newHighType == "HH" and lastLowType  == "LL"
+sellSignal = inpEnableEntry and newLowConfirmed  and newLowType  == "LL" and lastHighType == "HH"
+
+// --- วาดกรอบ Pattern (ก่อน update state — ใช้ llBar/llPrice หรือ hhBar/hhPrice ตัวเก่า) ---
+if barstate.isconfirmed and buySignal and inpShowPatternBox and not na(llBar) and not na(llPrice)
+    box.new(left=llBar, top=newHighPrice, right=newHighBar, bottom=llPrice,
+         bgcolor=color.new(inpUpColor, 88),
+         border_color=color.new(inpUpColor, 40),
+         border_width=1, border_style=line.style_dashed,
+         text="LL → HH", text_size=size.tiny,
+         text_color=color.new(inpUpColor, 15),
+         text_halign=text.align_left, text_valign=text.align_top)
+
+if barstate.isconfirmed and sellSignal and inpShowPatternBox and not na(hhBar) and not na(hhPrice)
+    box.new(left=hhBar, top=hhPrice, right=newLowBar, bottom=newLowPrice,
+         bgcolor=color.new(inpDownColor, 88),
+         border_color=color.new(inpDownColor, 40),
+         border_width=1, border_style=line.style_dashed,
+         text="HH → LL", text_size=size.tiny,
+         text_color=color.new(inpDownColor, 15),
+         text_halign=text.align_left, text_valign=text.align_bottom)
+
+// อัปเดต state สำหรับใช้กับแท่งถัดไป
+if newHighConfirmed
+    lastHighType := newHighType
+    if newHighType == "HH"
+        hhBar   := newHighBar
+        hhPrice := newHighPrice
+if newLowConfirmed
+    lastLowType := newLowType
+    if newLowType == "LL"
+        llBar   := newLowBar
+        llPrice := newLowPrice
+
+// --- วาด label วงกลมเล็ก + เส้นเล็ก ๆ บอกระดับราคาเปิดออเดอร์ ---
 if barstate.isconfirmed and buySignal
-    buyTip = (useS1 and s1Buy ? "S1 Pullback Buy\n" : "") +
-             (useS2 and s2Buy ? "S2 BOS Buy (HH+HL ครั้งแรก)\n" : "") +
-             (useS3 and s3Buy ? "S3 Trendline Break Buy\n" : "")
+    // marker วงกลมเขียวใต้แท่ง
     label.new(bar_index, na,
          style=label.style_circle,
          color=inpUpColor,
          size=size.tiny,
          yloc=yloc.belowbar,
-         tooltip="BUY\n" + buyTip)
+         tooltip="BUY\nPattern: LL -> HH (bottom reversal confirmed)\nEntry: " + str.tostring(close, format.mintick))
+    // เส้นเล็ก ๆ ที่ระดับราคา entry (คงอยู่เป็น marker ประวัติศาสตร์)
+    line.new(bar_index, close, bar_index + inpEntryLineBars, close,
+         color=inpUpColor, width=2, style=line.style_solid)
+    label.new(bar_index + inpEntryLineBars, close,
+         text="BUY " + str.tostring(close, format.mintick),
+         style=label.style_none,
+         textcolor=inpUpColor,
+         size=size.tiny)
 
 if barstate.isconfirmed and sellSignal
-    sellTip = (useS1 and s1Sell ? "S1 Pullback Sell\n" : "") +
-              (useS2 and s2Sell ? "S2 BOS Sell (LL+LH ครั้งแรก)\n" : "") +
-              (useS3 and s3Sell ? "S3 Trendline Break Sell\n" : "")
+    // marker วงกลมแดงเหนือแท่ง
     label.new(bar_index, na,
          style=label.style_circle,
          color=inpDownColor,
          size=size.tiny,
          yloc=yloc.abovebar,
-         tooltip="SELL\n" + sellTip)
+         tooltip="SELL\nPattern: HH -> LL (top reversal confirmed)\nEntry: " + str.tostring(close, format.mintick))
+    // เส้นเล็ก ๆ ที่ระดับราคา entry
+    line.new(bar_index, close, bar_index + inpEntryLineBars, close,
+         color=inpDownColor, width=2, style=line.style_solid)
+    label.new(bar_index + inpEntryLineBars, close,
+         text="SELL " + str.tostring(close, format.mintick),
+         style=label.style_none,
+         textcolor=inpDownColor,
+         size=size.tiny)
 
 // ==================================================================
 // === Exit System (SL / TP / Trailing / Structure Exit) ===
@@ -301,11 +349,18 @@ if barstate.isconfirmed and sellSignal
 atrVal   = ta.atr(inpAtrLen)
 slBuffer = atrVal * inpSlBufMult
 
-// --- Structure Exit conditions (ทำงานทุก strategy ไม่ขึ้นกับ dropdown) ---
-// Long ออกเมื่อ: เส้น Uptrend หัก (S3 Sell) หรือ โครงสร้างกลายเป็น DOWNTREND (S2 Sell)
-// Short ออกเมื่อ: เส้น Downtrend หัก (S3 Buy) หรือ โครงสร้างกลายเป็น UPTREND (S2 Buy)
-structExitLong  = s3Sell or s2Sell
-structExitShort = s3Buy or s2Buy
+// --- Structure Exit conditions ---
+// Long ออกเมื่อ: โครงสร้าง Dow เพิ่งเปลี่ยนเป็น DOWNTREND หรือปิดต่ำกว่าเส้น Uptrend
+// Short ออกเมื่อ: โครงสร้าง Dow เพิ่งเปลี่ยนเป็น UPTREND หรือปิดสูงกว่าเส้น Downtrend
+bool downtrendFlip   = isDownTrend and not isDownTrend[1]
+bool uptrendFlip     = isUpTrend and not isUpTrend[1]
+bool upLineBreakRaw  = isUpTrend and not na(upLineVal) and close < upLineVal
+bool downLineBreakRaw= isDownTrend and not na(downLineVal) and close > downLineVal
+// ยิงเฉพาะแท่งแรกที่ break (ไม่ยิงซ้ำติดกัน)
+bool upLineBreak     = upLineBreakRaw and not upLineBreakRaw[1]
+bool downLineBreak   = downLineBreakRaw and not downLineBreakRaw[1]
+structExitLong  = downtrendFlip or upLineBreak
+structExitShort = uptrendFlip or downLineBreak
 
 // --- Virtual position state ---
 var int    posDir       = 0     // 0 = flat, 1 = long, -1 = short
@@ -371,7 +426,7 @@ if barstate.isconfirmed and posDir == 1
     else if structExitLong
         exitLongEvent := true
         exitByStruct := true
-        exitReason := s3Sell ? "Structure: uptrend line broken" : "Structure: Dow flipped to DOWNTREND"
+        exitReason := upLineBreak ? "Structure: uptrend line broken" : "Structure: Dow flipped to DOWNTREND"
     else if sellSignal
         exitLongEvent := true
         exitByStruct := true
@@ -389,7 +444,7 @@ if barstate.isconfirmed and posDir == -1
     else if structExitShort
         exitShortEvent := true
         exitByStruct := true
-        exitReason := s3Buy ? "Structure: downtrend line broken" : "Structure: Dow flipped to UPTREND"
+        exitReason := downLineBreak ? "Structure: downtrend line broken" : "Structure: Dow flipped to UPTREND"
     else if buySignal
         exitShortEvent := true
         exitByStruct := true
@@ -441,7 +496,7 @@ if barstate.isconfirmed and buySignal and posDir == 0
     posDir := 1
     entryPrice := close
     tradeTime := time
-    tradeTag := (useS1 and s1Buy ? "S1" : useS2 and s2Buy ? "S2" : "S3")
+    tradeTag := "LL→HH"
     // SL: ใต้ Swing Low ล่าสุด - buffer (ถ้าผิดปกติใช้ ATR เต็มแทน)
     slPrice := gLastLow - slBuffer
     if na(slPrice) or slPrice >= entryPrice
@@ -467,7 +522,7 @@ if barstate.isconfirmed and sellSignal and posDir == 0
     posDir := -1
     entryPrice := close
     tradeTime := time
-    tradeTag := (useS1 and s1Sell ? "S1" : useS2 and s2Sell ? "S2" : "S3")
+    tradeTag := "HH→LL"
     // SL: เหนือ Swing High ล่าสุด + buffer
     slPrice := gLastHigh + slBuffer
     if na(slPrice) or slPrice <= entryPrice
@@ -521,7 +576,7 @@ if inpShowPanel and barstate.islast and hCount >= 2 and lCount >= 2
     table.cell(panel, 1, 4, str.tostring(prevLow2, format.mintick), text_color=color.gray, text_size=size.small, text_halign=text.align_left)
 
     table.cell(panel, 0, 5, "Strategy", text_color=color.aqua, text_size=size.small, text_halign=text.align_left)
-    table.cell(panel, 1, 5, inpStrategy, text_color=color.aqua, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 1, 5, inpEnableEntry ? "Swing Reversal (LL→HH / HH→LL)" : "OFF", text_color=color.aqua, text_size=size.small, text_halign=text.align_left)
 
     table.cell(panel, 0, 6, "TP Mode", text_color=color.aqua, text_size=size.small, text_halign=text.align_left)
     table.cell(panel, 1, 6, inpTpMode + (inpTpMode == TP_RR ? " (1:" + str.tostring(inpRR) + ")" : ""), text_color=color.aqua, text_size=size.small, text_halign=text.align_left)
@@ -683,7 +738,7 @@ if showStatsTable and barstate.islast
         periodStr := "Last " + str.tostring(statMonths) + " Months"
     else if statMode == "3. เจาะจงเดือนและปี (Specific Month)"
         periodStr := statTargetM + " " + str.tostring(actualTargetY)
-    string stratShort = inpStrategy == STRAT_1 ? "S1 Pullback" : inpStrategy == STRAT_2 ? "S2 BOS" : inpStrategy == STRAT_3 ? "S3 TL Break" : inpStrategy == STRAT_ALL ? "All (S1+S2+S3)" : "None"
+    string stratShort = inpEnableEntry ? "Swing Reversal" : "OFF"
     string tpModeStr  = inpTpMode == TP_RR ? "R:R 1:" + str.tostring(inpRR, "#.#") : inpTpMode == TP_SWING ? "Swing Target" : "Trailing Swing"
     table.cell(statsTable, 0, 0,  "◆  DOW THEORY PERFORMANCE", text_color=lxTitleTx, text_size=size.small, bgcolor=lxHeadBg)
     table.cell(statsTable, 0, 1,  periodStr + "  ·  " + syminfo.ticker + " " + timeframe.period, text_color=lxMuted, text_size=size.tiny, bgcolor=lxSubBg)
@@ -971,14 +1026,8 @@ alertcondition(trendState == "UPTREND - HH + HL", title="Uptrend Detected", mess
 alertcondition(trendState == "DOWNTREND - LL + LH", title="Downtrend Detected", message="Dow Theory: DOWNTREND - LL + LH detected")
 alertcondition(trendState == "SIDEWAY / CORRECTION", title="Sideway Detected", message="Dow Theory: SIDEWAY / CORRECTION detected")
 
-alertcondition(s1Buy,  title="S1 Pullback Buy",        message="Dow Theory S1: Pullback to uptrend line - BUY")
-alertcondition(s1Sell, title="S1 Pullback Sell",       message="Dow Theory S1: Pullback to downtrend line - SELL")
-alertcondition(s2Buy,  title="S2 BOS Buy",             message="Dow Theory S2: BOS first HH+HL - BUY")
-alertcondition(s2Sell, title="S2 BOS Sell",            message="Dow Theory S2: BOS first LL+LH - SELL")
-alertcondition(s3Buy,  title="S3 Trendline Break Buy", message="Dow Theory S3: Break above downtrend line - BUY")
-alertcondition(s3Sell, title="S3 Trendline Break Sell",message="Dow Theory S3: Break below uptrend line - SELL")
-alertcondition(buySignal,  title="Any Buy Signal",  message="Dow Theory: BUY signal (selected strategy)")
-alertcondition(sellSignal, title="Any Sell Signal", message="Dow Theory: SELL signal (selected strategy)")
+alertcondition(buySignal,  title="Swing Reversal Buy",  message="Dow Theory Swing Reversal: LL -> HH confirmed - BUY")
+alertcondition(sellSignal, title="Swing Reversal Sell", message="Dow Theory Swing Reversal: HH -> LL confirmed - SELL")
 
 alertcondition(exitLongEvent,  title="Exit Long",        message="Dow Theory: EXIT LONG (SL/TP/Structure)")
 alertcondition(exitShortEvent, title="Exit Short",       message="Dow Theory: EXIT SHORT (SL/TP/Structure)")
