@@ -28,7 +28,6 @@ inpShowPanel    = input.bool(true, "Show Info Panel")
 // Buy  : LL แล้วตามด้วย HH -> เข้า Buy เมื่อ HH confirm
 // Sell : HH แล้วตามด้วย LL -> เข้า Sell เมื่อ LL confirm
 inpEnableEntry     = input.bool(true, "Enable Swing Reversal Entries", group="Entry Signals")
-inpEntryLineBars   = input.int(10, "Entry Marker Line Length (bars)", minval=1, maxval=50, group="Entry Signals", tooltip="ความยาวเส้นเล็ก ๆ ที่วาดตรงระดับราคาเปิดออเดอร์ (Buy = เขียว, Sell = แดง)")
 inpShowPatternBox  = input.bool(true, "Show LL→HH / HH→LL Pattern Box", group="Entry Signals", tooltip="วาดกรอบครอบช่วงระหว่างจุด LL กับ HH (สำหรับ Buy) หรือ HH กับ LL (สำหรับ Sell) เพื่อให้สังเกต pattern ได้ง่าย")
 
 // --- Exit Settings ---
@@ -238,16 +237,17 @@ if hCount >= 2 and lCount >= 2
 // ==================================================================
 
 // --- Swing sequence tracker ---
-// เก็บชนิดของ swing ล่าสุด (HH/LH/HL/LL) + bar/price ของ LL และ HH ล่าสุด
-// เพื่อตรวจจับ pattern:
-//   ...LL (แล้วตามมาด้วย) HH  -> BUY  ที่แท่ง HH confirm
-//   ...HH (แล้วตามมาด้วย) LL  -> SELL ที่แท่ง LL confirm
-var string lastHighType = ""   // "HH" หรือ "LH"
-var string lastLowType  = ""   // "HL" หรือ "LL"
-var int    llBar        = na   // bar_index ของ pivot LL ล่าสุด
-var float  llPrice      = na   // ราคาของ pivot LL ล่าสุด
-var int    hhBar        = na   // bar_index ของ pivot HH ล่าสุด
-var float  hhPrice      = na   // ราคาของ pivot HH ล่าสุด
+// เก็บ "swing ล่าสุด" (ตัวใดก็ได้) เพื่อบังคับว่า HH/LL ที่ยิงสัญญาณ
+// ต้องต่อจากคู่ตรงข้ามโดยตรง ห้ามมี LH หรือ HL คั่นกลาง:
+//   [LL] -> [HH]  ที่ต่อทันที        -> BUY  (swing ก่อนหน้าต้องเป็น LL)
+//   [HH] -> [LL]  ที่ต่อทันที        -> SELL (swing ก่อนหน้าต้องเป็น HH)
+// ถ้ามี LH/HL คั่น lastSwingType จะถูก overwrite ทำให้ pattern ถูก "ยกเลิก"
+// อัตโนมัติ (ไม่ยิงสัญญาณ ไม่วาดกรอบ ไม่เปิดออเดอร์)
+var string lastSwingType = ""   // "HH" / "LH" / "HL" / "LL" — swing ล่าสุดจริง ๆ (ทุกฝั่ง)
+var int    llBar         = na   // bar_index ของ pivot LL ล่าสุด (ใช้วาดกรอบ)
+var float  llPrice       = na   // ราคาของ pivot LL ล่าสุด
+var int    hhBar         = na   // bar_index ของ pivot HH ล่าสุด
+var float  hhPrice       = na   // ราคาของ pivot HH ล่าสุด
 
 // ระบุว่ามี swing high/low ใหม่เพิ่ง confirm ในแท่งนี้หรือไม่
 bool newHighConfirmed = not na(isSwingHigh) and hCount >= 2
@@ -272,9 +272,10 @@ if newLowConfirmed
     float prevL = array.get(swingLowPrices, lCount - 2)
     newLowType := newLowPrice > prevL ? "HL" : "LL"
 
-// สัญญาณต้องยิง "ก่อน" update state เพื่อดูว่า swing ก่อนหน้า (ในฝั่งตรงข้าม) เป็นอะไร
-buySignal  = inpEnableEntry and newHighConfirmed and newHighType == "HH" and lastLowType  == "LL"
-sellSignal = inpEnableEntry and newLowConfirmed  and newLowType  == "LL" and lastHighType == "HH"
+// สัญญาณ: swing ล่าสุด (ก่อน swing ปัจจุบัน) ต้องเป็นคู่ตรงข้ามพอดี
+// เช็คก่อน update lastSwingType เพื่อให้ค่ายังเป็นของ swing ก่อนหน้า
+buySignal  = inpEnableEntry and newHighConfirmed and newHighType == "HH" and lastSwingType == "LL"
+sellSignal = inpEnableEntry and newLowConfirmed  and newLowType  == "LL" and lastSwingType == "HH"
 
 // --- วาดกรอบ Pattern (ก่อน update state — ใช้ llBar/llPrice หรือ hhBar/hhPrice ตัวเก่า) ---
 if barstate.isconfirmed and buySignal and inpShowPatternBox and not na(llBar) and not na(llPrice)
@@ -296,51 +297,22 @@ if barstate.isconfirmed and sellSignal and inpShowPatternBox and not na(hhBar) a
          text_halign=text.align_left, text_valign=text.align_bottom)
 
 // อัปเดต state สำหรับใช้กับแท่งถัดไป
+// - lastSwingType ถูก overwrite ทุกครั้งที่มี swing ใหม่ (ไม่ว่าฝั่งไหน)
+//   ทำให้ LH หรือ HL ที่มาแทรกจะพัง pattern โดยอัตโนมัติ
+// - llBar/llPrice, hhBar/hhPrice เก็บพิกัดของ LL/HH ล่าสุดไว้สำหรับวาดกรอบ
 if newHighConfirmed
-    lastHighType := newHighType
+    lastSwingType := newHighType
     if newHighType == "HH"
         hhBar   := newHighBar
         hhPrice := newHighPrice
 if newLowConfirmed
-    lastLowType := newLowType
+    lastSwingType := newLowType
     if newLowType == "LL"
         llBar   := newLowBar
         llPrice := newLowPrice
 
-// --- วาด label วงกลมเล็ก + เส้นเล็ก ๆ บอกระดับราคาเปิดออเดอร์ ---
-if barstate.isconfirmed and buySignal
-    // marker วงกลมเขียวใต้แท่ง
-    label.new(bar_index, na,
-         style=label.style_circle,
-         color=inpUpColor,
-         size=size.tiny,
-         yloc=yloc.belowbar,
-         tooltip="BUY\nPattern: LL -> HH (bottom reversal confirmed)\nEntry: " + str.tostring(close, format.mintick))
-    // เส้นเล็ก ๆ ที่ระดับราคา entry (คงอยู่เป็น marker ประวัติศาสตร์)
-    line.new(bar_index, close, bar_index + inpEntryLineBars, close,
-         color=inpUpColor, width=2, style=line.style_solid)
-    label.new(bar_index + inpEntryLineBars, close,
-         text="BUY " + str.tostring(close, format.mintick),
-         style=label.style_none,
-         textcolor=inpUpColor,
-         size=size.tiny)
-
-if barstate.isconfirmed and sellSignal
-    // marker วงกลมแดงเหนือแท่ง
-    label.new(bar_index, na,
-         style=label.style_circle,
-         color=inpDownColor,
-         size=size.tiny,
-         yloc=yloc.abovebar,
-         tooltip="SELL\nPattern: HH -> LL (top reversal confirmed)\nEntry: " + str.tostring(close, format.mintick))
-    // เส้นเล็ก ๆ ที่ระดับราคา entry
-    line.new(bar_index, close, bar_index + inpEntryLineBars, close,
-         color=inpDownColor, width=2, style=line.style_solid)
-    label.new(bar_index + inpEntryLineBars, close,
-         text="SELL " + str.tostring(close, format.mintick),
-         style=label.style_none,
-         textcolor=inpDownColor,
-         size=size.tiny)
+// (marker วงกลม + info label + arrow SL/TP + short marker + price tag
+//  ถูกย้ายไปวาดในบล็อก position-open ด้านล่าง สไตล์เดียวกับ V10.1)
 
 // ==================================================================
 // === Exit System (SL / TP / Trailing / Structure Exit) ===
@@ -370,7 +342,6 @@ var float  tpPrice      = na
 var float  initRisk     = na    // ระยะ 1R ตอนเข้า (|entry - SL แรก|) ใช้คำนวณ R
 var int    tradeTime    = na    // เวลาเปิดสถานะ (บันทึกลง stats)
 var string tradeTag     = ""    // strategy ที่เปิดสถานะนี้ (S1/S2/S3)
-var line   entryLine    = na
 var line   slLine       = na
 var line   tpLine       = na
 
@@ -467,7 +438,6 @@ if exitLongEvent
     slPrice := na
     tpPrice := na
     initRisk := na
-    entryLine := na
     slLine := na
     tpLine := na
 
@@ -487,7 +457,6 @@ if exitShortEvent
     slPrice := na
     tpPrice := na
     initRisk := na
-    entryLine := na
     slLine := na
     tpLine := na
 
@@ -504,19 +473,56 @@ if barstate.isconfirmed and buySignal and posDir == 0
     initRisk := entryPrice - slPrice
     // TP ตามโหมด
     if inpTpMode == TP_RR
-        tpPrice := entryPrice + (entryPrice - slPrice) * inpRR
+        tpPrice := entryPrice + initRisk * inpRR
     else if inpTpMode == TP_SWING
         // เป้า = Swing High เดิม; ถ้าราคา break ไปแล้วใช้ measured move (HH-HL) แทน
         tpPrice := gLastHigh > entryPrice ? gLastHigh : entryPrice + (gLastHigh - gLastLow)
         if na(tpPrice) or tpPrice <= entryPrice
-            tpPrice := entryPrice + (entryPrice - slPrice) * inpRR
+            tpPrice := entryPrice + initRisk * inpRR
     else
         tpPrice := na
+    // === V10.1-style entry visuals ===
     if inpShowExitLines
-        entryLine := line.new(bar_index, entryPrice, bar_index + 1, entryPrice, color=color.gray, style=line.style_dotted, width=1)
-        slLine := line.new(bar_index, slPrice, bar_index + 1, slPrice, color=color.red, style=line.style_dashed, width=1)
+        float rr = not na(tpPrice) and initRisk > 0 ? (tpPrice - entryPrice) / initRisk : na
+        // Feature: วงกลมโปร่งใหญ่ที่ราคา entry
+        label.new(bar_index, entryPrice, text="",
+             style=label.style_circle, color=color.new(inpUpColor, 70), size=size.large)
+        // Feature: label ข้อมูล entry (พื้นดำ ตัวขาว)
+        string infoTxt = "BUY  (LL→HH)\nEntry: " + str.tostring(entryPrice, format.mintick) +
+             "\nSL: " + str.tostring(slPrice, format.mintick) +
+             (not na(tpPrice) ? "\nTP: " + str.tostring(tpPrice, format.mintick) + "  (" + str.tostring(rr, "#.##") + "R)" : "\nExit: Trailing SL")
+        label.new(bar_index, entryPrice, text=infoTxt,
+             color=color.new(color.black, 65), textcolor=color.new(color.white, 20),
+             style=label.style_label_up, size=size.small)
+        // Feature: ลูกศรจาก entry -> TP (เขียว) และ entry -> SL (แดง)
         if not na(tpPrice)
-            tpLine := line.new(bar_index, tpPrice, bar_index + 1, tpPrice, color=color.green, style=line.style_dashed, width=1)
+            line.new(bar_index, entryPrice, bar_index, tpPrice,
+                 color=color.new(color.green, 60), width=1, style=line.style_arrow_right)
+        line.new(bar_index, entryPrice, bar_index, slPrice,
+             color=color.new(color.red, 60), width=1, style=line.style_arrow_right)
+        // Feature: เส้นแนวนอนสั้น 6 แท่ง + ป้ายราคาที่ Entry / SL / TP
+        line.new(bar_index, entryPrice, bar_index + 6, entryPrice,
+             color=color.new(inpUpColor, 30), width=2)
+        line.new(bar_index, slPrice, bar_index + 6, slPrice,
+             color=color.new(color.red, 30), width=2)
+        label.new(bar_index + 6, entryPrice, text=str.tostring(entryPrice, format.mintick),
+             style=label.style_label_left, color=color.new(inpUpColor, 80),
+             textcolor=inpUpColor, size=size.tiny)
+        label.new(bar_index + 6, slPrice, text=str.tostring(slPrice, format.mintick),
+             style=label.style_label_left, color=color.new(color.red, 80),
+             textcolor=color.red, size=size.tiny)
+        if not na(tpPrice)
+            line.new(bar_index, tpPrice, bar_index + 6, tpPrice,
+                 color=color.new(color.green, 30), width=2)
+            label.new(bar_index + 6, tpPrice, text=str.tostring(tpPrice, format.mintick),
+                 style=label.style_label_left, color=color.new(color.green, 80),
+                 textcolor=color.green, size=size.tiny)
+        // Extending SL/TP lines (สำหรับ live level ระหว่างถือไม้ + trailing SL)
+        slLine := line.new(bar_index, slPrice, bar_index + 1, slPrice,
+             color=color.red, style=line.style_dashed, width=1)
+        if not na(tpPrice)
+            tpLine := line.new(bar_index, tpPrice, bar_index + 1, tpPrice,
+                 color=color.green, style=line.style_dashed, width=1)
 
 if barstate.isconfirmed and sellSignal and posDir == 0
     posDir := -1
@@ -529,23 +535,58 @@ if barstate.isconfirmed and sellSignal and posDir == 0
         slPrice := entryPrice + atrVal
     initRisk := slPrice - entryPrice
     if inpTpMode == TP_RR
-        tpPrice := entryPrice - (slPrice - entryPrice) * inpRR
+        tpPrice := entryPrice - initRisk * inpRR
     else if inpTpMode == TP_SWING
         tpPrice := gLastLow < entryPrice ? gLastLow : entryPrice - (gLastHigh - gLastLow)
         if na(tpPrice) or tpPrice >= entryPrice
-            tpPrice := entryPrice - (slPrice - entryPrice) * inpRR
+            tpPrice := entryPrice - initRisk * inpRR
     else
         tpPrice := na
+    // === V10.1-style entry visuals ===
     if inpShowExitLines
-        entryLine := line.new(bar_index, entryPrice, bar_index + 1, entryPrice, color=color.gray, style=line.style_dotted, width=1)
-        slLine := line.new(bar_index, slPrice, bar_index + 1, slPrice, color=color.red, style=line.style_dashed, width=1)
+        float rr = not na(tpPrice) and initRisk > 0 ? (entryPrice - tpPrice) / initRisk : na
+        // วงกลมโปร่งใหญ่ที่ราคา entry
+        label.new(bar_index, entryPrice, text="",
+             style=label.style_circle, color=color.new(inpDownColor, 70), size=size.large)
+        // label ข้อมูล entry (พื้นดำ ตัวขาว)
+        string infoTxt = "SELL  (HH→LL)\nEntry: " + str.tostring(entryPrice, format.mintick) +
+             "\nSL: " + str.tostring(slPrice, format.mintick) +
+             (not na(tpPrice) ? "\nTP: " + str.tostring(tpPrice, format.mintick) + "  (" + str.tostring(rr, "#.##") + "R)" : "\nExit: Trailing SL")
+        label.new(bar_index, entryPrice, text=infoTxt,
+             color=color.new(color.black, 65), textcolor=color.new(color.white, 20),
+             style=label.style_label_down, size=size.small)
+        // ลูกศรจาก entry -> TP (เขียว) และ entry -> SL (แดง)
         if not na(tpPrice)
-            tpLine := line.new(bar_index, tpPrice, bar_index + 1, tpPrice, color=color.green, style=line.style_dashed, width=1)
+            line.new(bar_index, entryPrice, bar_index, tpPrice,
+                 color=color.new(color.green, 60), width=1, style=line.style_arrow_right)
+        line.new(bar_index, entryPrice, bar_index, slPrice,
+             color=color.new(color.red, 60), width=1, style=line.style_arrow_right)
+        // เส้นแนวนอนสั้น 6 แท่ง + ป้ายราคา
+        line.new(bar_index, entryPrice, bar_index + 6, entryPrice,
+             color=color.new(inpDownColor, 30), width=2)
+        line.new(bar_index, slPrice, bar_index + 6, slPrice,
+             color=color.new(color.red, 30), width=2)
+        label.new(bar_index + 6, entryPrice, text=str.tostring(entryPrice, format.mintick),
+             style=label.style_label_left, color=color.new(inpDownColor, 80),
+             textcolor=inpDownColor, size=size.tiny)
+        label.new(bar_index + 6, slPrice, text=str.tostring(slPrice, format.mintick),
+             style=label.style_label_left, color=color.new(color.red, 80),
+             textcolor=color.red, size=size.tiny)
+        if not na(tpPrice)
+            line.new(bar_index, tpPrice, bar_index + 6, tpPrice,
+                 color=color.new(color.green, 30), width=2)
+            label.new(bar_index + 6, tpPrice, text=str.tostring(tpPrice, format.mintick),
+                 style=label.style_label_left, color=color.new(color.green, 80),
+                 textcolor=color.green, size=size.tiny)
+        // Extending SL/TP lines
+        slLine := line.new(bar_index, slPrice, bar_index + 1, slPrice,
+             color=color.red, style=line.style_dashed, width=1)
+        if not na(tpPrice)
+            tpLine := line.new(bar_index, tpPrice, bar_index + 1, tpPrice,
+                 color=color.green, style=line.style_dashed, width=1)
 
 // --- ยืดเส้น Entry/SL/TP ตามแท่งขณะถือสถานะ ---
 if posDir != 0
-    if not na(entryLine)
-        line.set_x2(entryLine, bar_index)
     if not na(slLine)
         line.set_x2(slLine, bar_index)
     if not na(tpLine)

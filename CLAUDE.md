@@ -12,8 +12,8 @@
   - Trendline drawing (Uptrend/Downtrend)
   - HH/HL/LH/LL labels
   - Info panel + Alert conditions
-  - Entry: Swing Reversal (sequence-based) — LL แล้วเกิด HH → Buy เมื่อ HH confirm, HH แล้วเกิด LL → Sell เมื่อ LL confirm
-  - จุดเข้าออเดอร์: label วงกลมเล็ก (เขียว = Buy ใต้แท่ง, แดง = Sell เหนือแท่ง) + เส้นเล็ก ๆ ที่ระดับราคา entry + label ราคา
+  - Entry: Swing Reversal (strict-adjacency) — LL แล้วต่อด้วย HH (ห้ามมี LH/HL คั่น) → Buy เมื่อ HH confirm, HH แล้วต่อด้วย LL (ห้ามมี LH/HL คั่น) → Sell เมื่อ LL confirm; track ผ่าน lastSwingType ตัวเดียว ทุก swing ที่มาแทรกจะยกเลิก pattern อัตโนมัติ
+  - จุดเข้าออเดอร์แบบ V10.1: วงกลมใหญ่โปร่ง (เขียว/แดง) + label ดำแสดง Entry/SL/TP + R:R, ลูกศรจาก entry → SL (แดง) และ entry → TP (เขียว), เส้นแนวนอนสั้น 6 แท่งที่ Entry/SL/TP + ป้ายราคา
   - กรอบ Pattern: วาดกล่องครอบช่วง LL→HH (เขียว) หรือ HH→LL (แดง) เพื่อให้เห็น pattern ชัดเจน (toggle ได้)
   - Exit system: SL ใต้/เหนือ swing + ATR buffer, TP 3 โหมด (Swing Target / Risk:Reward / Trailing Swing), Structure Exit เมื่อโครงสร้าง Dow เปลี่ยน, จุดออกเป็นวงกลมส้ม + เส้น Entry/SL/TP
   - Stats tables สไตล์ V10.1 (Luxe theme): Main Stats, By Day, Daily Log, Monthly + dropdown เลือกช่วงเวลา (Days/Months/Specific Month) + เลือกตำแหน่งตารางได้
