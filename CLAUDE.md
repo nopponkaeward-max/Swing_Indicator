@@ -15,5 +15,7 @@
   - Entry: Swing Reversal (strict-adjacency) — LL แล้วต่อด้วย HH (ห้ามมี LH/HL คั่น) → Buy เมื่อ HH confirm, HH แล้วต่อด้วย LL (ห้ามมี LH/HL คั่น) → Sell เมื่อ LL confirm; track ผ่าน lastSwingType ตัวเดียว ทุก swing ที่มาแทรกจะยกเลิก pattern อัตโนมัติ
   - จุดเข้าออเดอร์แบบ V10.1: วงกลมใหญ่โปร่ง (เขียว/แดง) + label ดำแสดง Entry/SL/TP + R:R, ลูกศรจาก entry → SL (แดง) และ entry → TP (เขียว), เส้นแนวนอนสั้น 6 แท่งที่ Entry/SL/TP + ป้ายราคา
   - กรอบ Pattern: วาดกล่องครอบช่วง LL→HH (เขียว) หรือ HH→LL (แดง) เพื่อให้เห็น pattern ชัดเจน (toggle ได้)
-  - Exit system: SL ใต้/เหนือ swing + ATR buffer, TP 3 โหมด (Swing Target / Risk:Reward / Trailing Swing), Structure Exit เมื่อโครงสร้าง Dow เปลี่ยน, จุดออกเป็นวงกลมส้ม + เส้น Entry/SL/TP
+  - Entry Mode สไตล์ V10.1: (1) Breakout — เข้าที่ close ของแท่ง confirm ทันที; (2) Pullback — สร้าง pending order ที่ระดับ pullback (`% of Price` หรือ `% of Range` ของ HH↔LL) รอราคาถอยแตะจึง fill, มี expiry เป็นจำนวนแท่ง, ยกเลิก pending ทันทีถ้าสัญญาณตรงข้ามยิงตามมา
+  - Risk Management สไตล์ V10.1: 1R Basis เลือก SL% (% ของ pattern range) / Distance (คงที่) / ATR (× multiplier), SL Edge Mode วาง SL ที่ขอบ pattern, Risk per 1R ($) → คำนวณ Lot อัตโนมัติผ่าน `lot = risk / (1R × pipValueRatio)`, R:R Ratio, Spread adjustment (BUY +spread / SELL -spread)
+  - Exit: เหลือแค่ SL hit / TP hit เท่านั้น (ไม่มี trailing / structure / reverse) — จุดออกเป็นวงกลมส้ม + tooltip แสดง entry/exit
   - Stats tables สไตล์ V10.1 (Luxe theme): Main Stats, By Day, Daily Log, Monthly + dropdown เลือกช่วงเวลา (Days/Months/Specific Month) + เลือกตำแหน่งตารางได้
