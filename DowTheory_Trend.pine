@@ -369,9 +369,7 @@ if newLowConfirmed
 // --- 1R distance helper (SL% ใช้ pattern range ที่ pass เข้ามา) ---
 atrOneR = ta.atr(inpOneRAtrPeriod)
 f_oneR(float patternRange) =>
-    inpOneRBasis == ONER_DIST ? inpOneRDistFix :
-     inpOneRBasis == ONER_ATR  ? atrOneR * inpOneRAtrMult :
-                                 patternRange * (inpOneRPctVal / 100.0)
+    inpOneRBasis == ONER_DIST ? inpOneRDistFix : inpOneRBasis == ONER_ATR ? atrOneR * inpOneRAtrMult : patternRange * (inpOneRPctVal / 100.0)
 
 // --- Position state ---
 var int    posDir     = 0     // 0 = flat, 1 = long, -1 = short
@@ -418,41 +416,14 @@ f_recordResult(float pnlDist, float riskDist, int t, string tag) =>
         array.shift(resTpPts)
         array.shift(resTag)
 
-// --- ยกเลิก pending order + ลบเส้น/label ---
-f_cancelPending(string reason) =>
-    if not na(pendingLine)
-        line.delete(pendingLine)
-    if not na(pendingLabel)
-        label.delete(pendingLabel)
-    if reason != "" and pendingDir != 0
-        label.new(bar_index, pendingEntry,
-             text="CANCEL PENDING (" + reason + ")",
-             style=pendingDir == 1 ? label.style_label_down : label.style_label_up,
-             color=color.new(color.gray, 25), textcolor=color.white, size=size.tiny)
-    pendingDir := 0
-    pendingEntry := na
-    pendingSL := na
-    pendingTP := na
-    pendingRisk := na
-    pendingLot := na
-    pendingCreateBar := na
-    pendingTag := ""
-    pendingLine := na
-    pendingLabel := na
-
-// --- เปิด position + วาด V10.1 entry visuals ---
-f_openPosition(int dir, float ent, float sl, float tp, float risk, float lot, string tag) =>
-    posDir := dir
-    entryPrice := ent
-    slPrice := sl
-    tpPrice := tp
-    initRisk := risk
-    lotSize := lot
-    tradeTime := time
-    tradeTag := tag
-    color mainCol = dir == 1 ? inpUpColor : inpDownColor
-    float rr = risk > 0 ? math.abs(tp - ent) / risk : na
+// --- วาด V10.1 entry visuals (วาดอย่างเดียว ไม่แตะ global state) ---
+// คืนค่า [slLine, tpLine] ให้ผู้เรียกเก็บเข้า state เอง
+f_drawEntry(int dir, float ent, float sl, float tp, float risk, float lot, string tag) =>
+    line _slLn = na
+    line _tpLn = na
     if inpShowExitLines
+        color mainCol = dir == 1 ? inpUpColor : inpDownColor
+        float rr = risk > 0 ? math.abs(tp - ent) / risk : na
         // วงกลมโปร่งใหญ่ที่ราคา entry
         label.new(bar_index, ent, text="",
              style=label.style_circle, color=color.new(mainCol, 70), size=size.large)
@@ -488,10 +459,11 @@ f_openPosition(int dir, float ent, float sl, float tp, float risk, float lot, st
              style=label.style_label_left, color=color.new(color.green, 80),
              textcolor=color.green, size=size.tiny)
         // Extending SL/TP lines (สำหรับ live level ระหว่างถือไม้)
-        slLine := line.new(bar_index, sl, bar_index + 1, sl,
+        _slLn := line.new(bar_index, sl, bar_index + 1, sl,
              color=color.red, style=line.style_dashed, width=1)
-        tpLine := line.new(bar_index, tp, bar_index + 1, tp,
+        _tpLn := line.new(bar_index, tp, bar_index + 1, tp,
              color=color.green, style=line.style_dashed, width=1)
+    [_slLn, _tpLn]
 
 // ==================================================================
 // === Exit check (SL/TP เท่านั้น) ===
@@ -558,29 +530,64 @@ if exitShortEvent
     tpLine := na
 
 // ==================================================================
-// === Pending order fill / expire ===
+// === Pending order fill / expire / cancel ===
 // ==================================================================
 // ราคาถอยเข้ามาถึง pullback level -> fill (แปลง pending เป็น position)
-if barstate.isconfirmed and pendingDir == 1 and posDir == 0
-    if low <= pendingEntry
-        // Fill ที่ราคา pendingEntry (สมมติ limit order เต็ม)
-        f_openPosition(1, pendingEntry, pendingSL, pendingTP, pendingRisk, pendingLot, pendingTag)
-        f_cancelPending("")
-    else if inpPlanExpireBars > 0 and bar_index - pendingCreateBar >= inpPlanExpireBars
-        f_cancelPending("expired")
+bool fillBuy  = barstate.isconfirmed and pendingDir == 1 and posDir == 0 and low <= pendingEntry
+bool fillSell = barstate.isconfirmed and pendingDir == -1 and posDir == 0 and high >= pendingEntry
+bool pendExpired = barstate.isconfirmed and pendingDir != 0 and not fillBuy and not fillSell and inpPlanExpireBars > 0 and bar_index - pendingCreateBar >= inpPlanExpireBars
+bool pendOpposite = barstate.isconfirmed and not fillBuy and not fillSell and not pendExpired and ((pendingDir == 1 and sellSignal) or (pendingDir == -1 and buySignal))
 
-if barstate.isconfirmed and pendingDir == -1 and posDir == 0
-    if high >= pendingEntry
-        f_openPosition(-1, pendingEntry, pendingSL, pendingTP, pendingRisk, pendingLot, pendingTag)
-        f_cancelPending("")
-    else if inpPlanExpireBars > 0 and bar_index - pendingCreateBar >= inpPlanExpireBars
-        f_cancelPending("expired")
+if fillBuy
+    [sLn1, tLn1] = f_drawEntry(1, pendingEntry, pendingSL, pendingTP, pendingRisk, pendingLot, pendingTag)
+    posDir := 1
+    entryPrice := pendingEntry
+    slPrice := pendingSL
+    tpPrice := pendingTP
+    initRisk := pendingRisk
+    lotSize := pendingLot
+    tradeTime := time
+    tradeTag := pendingTag
+    slLine := sLn1
+    tpLine := tLn1
 
-// ยกเลิก pending ถ้าสัญญาณตรงข้ามยิงตามมา
-if pendingDir == 1 and sellSignal
-    f_cancelPending("opposite signal")
-if pendingDir == -1 and buySignal
-    f_cancelPending("opposite signal")
+if fillSell
+    [sLn2, tLn2] = f_drawEntry(-1, pendingEntry, pendingSL, pendingTP, pendingRisk, pendingLot, pendingTag)
+    posDir := -1
+    entryPrice := pendingEntry
+    slPrice := pendingSL
+    tpPrice := pendingTP
+    initRisk := pendingRisk
+    lotSize := pendingLot
+    tradeTime := time
+    tradeTag := pendingTag
+    slLine := sLn2
+    tpLine := tLn2
+
+// label แจ้งยกเลิก (เฉพาะ expired / opposite signal)
+if (pendExpired or pendOpposite) and not na(pendingEntry)
+    string cancelReason = pendExpired ? "expired" : "opposite signal"
+    label.new(bar_index, pendingEntry,
+         text="CANCEL PENDING (" + cancelReason + ")",
+         style=pendingDir == 1 ? label.style_label_down : label.style_label_up,
+         color=color.new(color.gray, 25), textcolor=color.white, size=size.tiny)
+
+// เคลียร์ pending state (หลัง fill / expire / opposite)
+if fillBuy or fillSell or pendExpired or pendOpposite
+    if not na(pendingLine)
+        line.delete(pendingLine)
+    if not na(pendingLabel)
+        label.delete(pendingLabel)
+    pendingDir := 0
+    pendingEntry := na
+    pendingSL := na
+    pendingTP := na
+    pendingRisk := na
+    pendingLot := na
+    pendingCreateBar := na
+    pendingTag := ""
+    pendingLine := na
+    pendingLabel := na
 
 // ==================================================================
 // === Entry: สร้าง position (Breakout) หรือ pending order (Pullback) ===
@@ -606,7 +613,17 @@ if barstate.isconfirmed and buySignal and posDir == 0 and pendingDir == 0
     // Lot: riskAmount / (1R × pipValueRatio)
     float lot = oneR > 0 ? inpRiskAmount / (oneR * inpPipValueRatio) : 0
     if inpEntryMode == ENTRY_MODE_BREAKOUT
-        f_openPosition(1, ent, sl, tp, risk, lot, "LL→HH")
+        [sLn3, tLn3] = f_drawEntry(1, ent, sl, tp, risk, lot, "LL→HH")
+        posDir := 1
+        entryPrice := ent
+        slPrice := sl
+        tpPrice := tp
+        initRisk := risk
+        lotSize := lot
+        tradeTime := time
+        tradeTag := "LL→HH"
+        slLine := sLn3
+        tpLine := tLn3
     else
         // สร้าง pending order
         pendingDir       := 1
@@ -644,7 +661,17 @@ if barstate.isconfirmed and sellSignal and posDir == 0 and pendingDir == 0
     float tp = ent - oneR * inpRRRatio
     float lot = oneR > 0 ? inpRiskAmount / (oneR * inpPipValueRatio) : 0
     if inpEntryMode == ENTRY_MODE_BREAKOUT
-        f_openPosition(-1, ent, sl, tp, risk, lot, "HH→LL")
+        [sLn4, tLn4] = f_drawEntry(-1, ent, sl, tp, risk, lot, "HH→LL")
+        posDir := -1
+        entryPrice := ent
+        slPrice := sl
+        tpPrice := tp
+        initRisk := risk
+        lotSize := lot
+        tradeTime := time
+        tradeTag := "HH→LL"
+        slLine := sLn4
+        tpLine := tLn4
     else
         pendingDir       := -1
         pendingEntry     := ent
