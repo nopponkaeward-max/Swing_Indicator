@@ -90,6 +90,8 @@ inpSpreadPts     = input.float(0, "Spread (price)",
      minval=0, step=0.0001, group="Risk Management",
      tooltip="BUY: entry = base + spread, SELL: entry = base - spread\nSL/TP คำนวณจาก entry จริง (หลัง spread)")
 inpShowExitLines = input.bool(true, "Show Entry/SL/TP Visuals", group="Risk Management")
+inpShowTradePath = input.bool(true, "Show Trade Path Line (entry → exit)", group="Risk Management",
+     tooltip="วาดเส้นประจาก entry ถึง exit แสดงเส้นทางการเทรด สีตามผล (เขียว=win, แดง=loss)")
 
 // --- Display & Stats (สไตล์ V10.1) ---
 showStatsTable   = input.bool(true,  " Show Stats Table", group="Display & Stats")
@@ -385,6 +387,7 @@ var int    tradeTime  = na
 var string tradeTag   = ""
 var line   slLine     = na
 var line   tpLine     = na
+var int    tradeBarIdx = na   // bar_index ตอนเปิดออเดอร์ (สำหรับวาด trade path line)
 
 // --- Pending order state (สำหรับ Pullback mode) ---
 var int    pendingDir        = 0     // 0/1/-1 (ทิศทางที่จะเทรดจริง หลัง apply reverse)
@@ -492,19 +495,30 @@ if barstate.isconfirmed and posDir == -1
         exitByTP := true
         exitReason := "TP hit"
 
-// --- Execute exit: วงกลมส้ม + tooltip เหตุผล + บันทึก stats แล้วเคลียร์สถานะ ---
+// --- Execute exit: V10.1 visuals (result-colored circle + R label + trade path + short line) ---
 if exitLongEvent
-    // clamp กับราคาเปิดแท่ง: gap ลงต่ำกว่า SL -> ออกที่ open (แย่กว่า SL), gap ขึ้นเหนือ TP -> ออกที่ open (ดีกว่า TP)
     exitPx = exitBySL ? math.min(open, slPrice) : math.max(open, tpPrice)
-    f_recordResult(exitPx - entryPrice, initRisk, tradeTime, tradeTag)
-    label.new(bar_index, na,
-         style=label.style_circle,
-         color=color.orange,
-         size=size.tiny,
-         yloc=yloc.abovebar,
-         tooltip="EXIT LONG\n" + exitReason +
-             "\nEntry: " + str.tostring(entryPrice, format.mintick) +
-             "\nExit: " + str.tostring(exitPx, format.mintick))
+    float pnlDistL = exitPx - entryPrice
+    float actualRL = initRisk > 0 ? pnlDistL / initRisk : 0.0
+    f_recordResult(pnlDistL, initRisk, tradeTime, tradeTag)
+    color closeColL = actualRL > 0 ? color.green : actualRL == 0 ? color.gray : color.red
+    if inpShowExitLines
+        label.new(bar_index, exitPx, text="",
+             style=label.style_circle, color=color.new(closeColL, 50), size=size.normal)
+        string rSignL = actualRL >= 0 ? "+" : ""
+        label.new(bar_index, exitPx,
+             text=exitReason + "\n" + rSignL + str.tostring(actualRL, "#.##") + "R",
+             style=label.style_label_down, color=color.new(color.black, 65),
+             textcolor=closeColL, size=size.small,
+             tooltip="EXIT LONG\n" + exitReason +
+                 "\nEntry: " + str.tostring(entryPrice, format.mintick) +
+                 "\nExit: " + str.tostring(exitPx, format.mintick) +
+                 "\nR: " + rSignL + str.tostring(actualRL, "#.##"))
+        line.new(bar_index - 3, exitPx, bar_index + 3, exitPx,
+             color=closeColL, width=2)
+        if inpShowTradePath and not na(tradeBarIdx)
+            line.new(tradeBarIdx, entryPrice, bar_index, exitPx,
+                 color=color.new(closeColL, 60), width=1, style=line.style_dashed)
     posDir := 0
     entryPrice := na
     slPrice := na
@@ -513,19 +527,31 @@ if exitLongEvent
     lotSize := na
     slLine := na
     tpLine := na
+    tradeBarIdx := na
 
 if exitShortEvent
-    // clamp กับราคาเปิดแท่ง: gap ขึ้นเหนือ SL -> ออกที่ open, gap ลงต่ำกว่า TP -> ออกที่ open
     exitPx = exitBySL ? math.max(open, slPrice) : math.min(open, tpPrice)
-    f_recordResult(entryPrice - exitPx, initRisk, tradeTime, tradeTag)
-    label.new(bar_index, na,
-         style=label.style_circle,
-         color=color.orange,
-         size=size.tiny,
-         yloc=yloc.belowbar,
-         tooltip="EXIT SHORT\n" + exitReason +
-             "\nEntry: " + str.tostring(entryPrice, format.mintick) +
-             "\nExit: " + str.tostring(exitPx, format.mintick))
+    float pnlDistS = entryPrice - exitPx
+    float actualRS = initRisk > 0 ? pnlDistS / initRisk : 0.0
+    f_recordResult(pnlDistS, initRisk, tradeTime, tradeTag)
+    color closeColS = actualRS > 0 ? color.green : actualRS == 0 ? color.gray : color.red
+    if inpShowExitLines
+        label.new(bar_index, exitPx, text="",
+             style=label.style_circle, color=color.new(closeColS, 50), size=size.normal)
+        string rSignS = actualRS >= 0 ? "+" : ""
+        label.new(bar_index, exitPx,
+             text=exitReason + "\n" + rSignS + str.tostring(actualRS, "#.##") + "R",
+             style=label.style_label_up, color=color.new(color.black, 65),
+             textcolor=closeColS, size=size.small,
+             tooltip="EXIT SHORT\n" + exitReason +
+                 "\nEntry: " + str.tostring(entryPrice, format.mintick) +
+                 "\nExit: " + str.tostring(exitPx, format.mintick) +
+                 "\nR: " + rSignS + str.tostring(actualRS, "#.##"))
+        line.new(bar_index - 3, exitPx, bar_index + 3, exitPx,
+             color=closeColS, width=2)
+        if inpShowTradePath and not na(tradeBarIdx)
+            line.new(tradeBarIdx, entryPrice, bar_index, exitPx,
+                 color=color.new(closeColS, 60), width=1, style=line.style_dashed)
     posDir := 0
     entryPrice := na
     slPrice := na
@@ -534,6 +560,7 @@ if exitShortEvent
     lotSize := na
     slLine := na
     tpLine := na
+    tradeBarIdx := na
 
 // ==================================================================
 // === Pending order fill / expire / cancel ===
@@ -563,6 +590,7 @@ if fillBuy
     tradeTag := pendingTag
     slLine := sLn1
     tpLine := tLn1
+    tradeBarIdx := bar_index
 
 if fillSell
     float fillPx2 = pendingFillOnLow ? math.min(open, pendingEntry) : math.max(open, pendingEntry)
@@ -578,6 +606,7 @@ if fillSell
     tradeTag := pendingTag
     slLine := sLn2
     tpLine := tLn2
+    tradeBarIdx := bar_index
 
 // label แจ้งยกเลิก (เฉพาะ expired / opposite signal)
 if (pendExpired or pendOpposite) and not na(pendingEntry)
@@ -665,6 +694,7 @@ if barstate.isconfirmed and buySignal and posDir == 0 and pendingDir == 0
         tradeTag := tagStr
         slLine := sLn3
         tpLine := tLn3
+        tradeBarIdx := bar_index
 
 // --- SELL SIGNAL (HH→LL pattern): normal = SHORT, reverse = LONG ---
 if barstate.isconfirmed and sellSignal and posDir == 0 and pendingDir == 0
@@ -721,6 +751,7 @@ if barstate.isconfirmed and sellSignal and posDir == 0 and pendingDir == 0
         tradeTag := tagStr
         slLine := sLn4
         tpLine := tLn4
+        tradeBarIdx := bar_index
 
 // --- ยืดเส้น SL/TP ตามแท่งขณะถือสถานะ + ยืดเส้น pending ---
 if posDir != 0
