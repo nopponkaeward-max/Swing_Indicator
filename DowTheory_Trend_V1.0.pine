@@ -50,6 +50,9 @@ inpPullbackPct      = input.float(0.4, " [% of Price] Pullback %", step=0.05, gr
 inpPullbackRangePct = input.float(30, " [% of Range] Pullback %",
      minval=1, maxval=100, step=5, group="Entry Mode",
      tooltip="ใช้เมื่อ Pullback Mode = % of Range\n • BUY: pullback level = HL - (HH-HL) × X% (dip ต่ำกว่า HL อีก X% ของช่วง HH-HL)\n • SELL: pullback level = LH + (LH-LL) × X% (bounce สูงกว่า LH อีก X% ของช่วง LH-LL)\n\nหมายเหตุ: HL/LH เพิ่ง confirm (เป็นก้นของ pullback / ยอดของ retracement แล้ว)\nPullback mode นี้จึงรอ dip/bounce ที่ลึก/สูงกว่านั้นอีก — ถ้าราคาไปถึงหมายความว่า pattern เริ่มเสี่ยงเสีย")
+inpPlanExpireBars   = input.int(50, "Pending Order Expiry (bars, 0 = no expiry)",
+     minval=0, group="Entry Mode",
+     tooltip="ถ้าราคาไม่ถึง pullback level / breakout level ภายใน N แท่ง → ยกเลิก pending อัตโนมัติ\n0 = ไม่หมดอายุ (รอไปเรื่อย ๆ จนกว่าจะ fill หรือมีสัญญาณตรงข้าม/swing ใหม่มา cancel)")
 inpReverseTrade     = input.bool(false, "Reverse Trade (fade the pattern)",
      group="Entry Mode",
      tooltip="เปิด = พลิกทิศเทรด (bet ว่า pattern เป็นสัญญาณหลอก)\n • LL→HH→HL detected → SELL แทน BUY (SL วางที่ HH ขอบบนของกรอบ)\n • HH→LL→LH detected → BUY แทน SELL (SL วางที่ LL ขอบล่างของกรอบ)\n\nเหมาะกับกรณีที่มองว่า pattern น่าจะเป็น false-breakout (เช่นใน sideways market)\n\nหมายเหตุ: Dow Breakout (Mode 4) จะบังคับทิศตาม pattern เสมอ (reverse ไม่มีผล)")
