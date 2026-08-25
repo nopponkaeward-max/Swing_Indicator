@@ -58,7 +58,7 @@ inpReverseTrade     = input.bool(false, "Reverse Trade (fade the pattern)",
 
 // --- Recovery Mode (Normal) ---
 inpUseRecovery  = input.bool(false, "Enable Recovery", group="Recovery Mode",
-     tooltip="เมื่อเทรดหลักแพ้ (SL hit) → เปิด Recovery trade อัตโนมัติทันที\nEntry = ราคา SL ของเทรดเดิม, 1R สืบทอดจากเทรดเดิม\nRecovery ได้ 1 ครั้งต่อ 1 เทรดหลัก (ไม่ recover ซ้อน)")
+     tooltip="เมื่อเทรดหลักแพ้ (SL hit) → เปิด Recovery trade อัตโนมัติทันที\nEntry = ราคา exit จริงของเทรดเดิม (ปกติ = SL, ถ้า gap ข้าม = ราคา open), 1R สืบทอดจากเทรดเดิม\nRecovery ได้ 1 ครั้งต่อ 1 เทรดหลัก (ไม่ recover ซ้อน)")
 inpRecDir       = input.string("Reverse", "Recovery Direction", options=["Same", "Reverse"], group="Recovery Mode",
      tooltip="Same = เข้าทิศเดียวกับเทรดเดิม (เชื่อว่าจะกลับมา)\nReverse = เข้าสวนทิศเดิม (เชื่อว่าจะไปต่อ)")
 inpRecRRRatio   = input.float(1.5, "Recovery R:R", minval=0.1, step=0.1, group="Recovery Mode",
@@ -398,6 +398,7 @@ var line   slLine     = na
 var line   tpLine     = na
 var int    tradeBarIdx = na   // bar_index ตอนเปิดออเดอร์ (สำหรับวาด trade path line)
 var bool   isRecTrade  = false // true = เทรดปัจจุบันเป็น Recovery (ห้าม recover ซ้อน)
+var bool   tradeFilledOnLow = false // ทิศ trigger ตอน fill (ใช้เช็ค same-bar exit เฉพาะฝั่ง deterministic)
 
 // --- Pending order state (สำหรับ Pullback mode) ---
 var int    pendingDir        = 0     // 0/1/-1 (ทิศทางที่จะเทรดจริง หลัง apply reverse)
@@ -410,6 +411,7 @@ var int    pendingCreateBar  = na
 var string pendingTag        = ""
 var bool   pendingFillOnLow  = false // true = fill เมื่อ low<=entry (baseEnt ต่ำกว่าราคาปัจจุบัน), false = fill เมื่อ high>=entry
 var bool   pendingIsBreakout = false // true = pending เป็น breakout (ยกเลิกเมื่อมี swing ใหม่)
+var int    pendingPatDir     = 0     // ทิศของ "pattern" ที่สร้าง pending (1 = LL→HH, -1 = HH→LL) — ใช้เช็ค opposite signal ให้ถูกแม้เปิด Reverse mode
 var line   pendingLine       = na
 var label  pendingLabel      = na
 
@@ -484,31 +486,121 @@ f_drawEntry(int dir, float ent, float sl, float tp, float risk, float lot, strin
     [_slLn, _tpLn]
 
 // ==================================================================
+// === Pending order fill / expire / cancel ===
+// === (ต้องอยู่ก่อน Exit check เพื่อให้แท่งที่ fill ถูกเช็ค SL/TP ต่อได้เลย) ===
+// ==================================================================
+// ราคาถอยเข้ามาถึง pullback level -> fill (แปลง pending เป็น position)
+// fill trigger ขึ้นกับว่า baseEnt อยู่ฝั่งไหนของราคาตอนสร้าง pending (pendingFillOnLow)
+// ไม่ใช่ทิศทางการเทรด (pendingDir) — สำคัญมากตอน Reverse mode
+bool pendingHit  = pendingDir != 0 and posDir == 0 and (pendingFillOnLow ? low <= pendingEntry : high >= pendingEntry)
+bool fillBuy  = barstate.isconfirmed and pendingDir == 1  and pendingHit
+bool fillSell = barstate.isconfirmed and pendingDir == -1 and pendingHit
+bool pendExpired = barstate.isconfirmed and pendingDir != 0 and not fillBuy and not fillSell and inpPlanExpireBars > 0 and bar_index - pendingCreateBar >= inpPlanExpireBars
+// opposite = pattern ตรงข้ามกับ pattern ที่สร้าง pending (ใช้ pendingPatDir ไม่ใช่ pendingDir
+// เพื่อให้ถูกต้องแม้เปิด Reverse mode ซึ่งทิศเทรดสวนกับทิศ pattern)
+bool pendOpposite = barstate.isconfirmed and not fillBuy and not fillSell and not pendExpired and ((pendingPatDir == 1 and sellSignal) or (pendingPatDir == -1 and buySignal))
+bool pendNewSwing = barstate.isconfirmed and pendingDir != 0 and pendingIsBreakout and not fillBuy and not fillSell and not pendExpired and not pendOpposite and (newHighConfirmed or newLowConfirmed)
+
+// ราคา fill จริง: ถ้าแท่ง gap ข้าม level -> fill ที่ราคาเปิดแท่ง (ราคาที่ตลาดเทรดจริง)
+// ไม่ใช่ที่ level เดิมซึ่งตลาดไม่เคยแตะ
+if fillBuy
+    float fillPx1 = pendingFillOnLow ? math.min(open, pendingEntry) : math.max(open, pendingEntry)
+    float fillRisk1 = math.abs(fillPx1 - pendingSL)
+    [sLn1, tLn1] = f_drawEntry(1, fillPx1, pendingSL, pendingTP, fillRisk1, pendingLot, pendingTag)
+    posDir := 1
+    entryPrice := fillPx1
+    slPrice := pendingSL
+    tpPrice := pendingTP
+    initRisk := fillRisk1
+    lotSize := pendingLot
+    tradeTime := time
+    tradeTag := pendingTag
+    slLine := sLn1
+    tpLine := tLn1
+    tradeBarIdx := bar_index
+    tradeFilledOnLow := pendingFillOnLow
+
+if fillSell
+    float fillPx2 = pendingFillOnLow ? math.min(open, pendingEntry) : math.max(open, pendingEntry)
+    float fillRisk2 = math.abs(fillPx2 - pendingSL)
+    [sLn2, tLn2] = f_drawEntry(-1, fillPx2, pendingSL, pendingTP, fillRisk2, pendingLot, pendingTag)
+    posDir := -1
+    entryPrice := fillPx2
+    slPrice := pendingSL
+    tpPrice := pendingTP
+    initRisk := fillRisk2
+    lotSize := pendingLot
+    tradeTime := time
+    tradeTag := pendingTag
+    slLine := sLn2
+    tpLine := tLn2
+    tradeBarIdx := bar_index
+    tradeFilledOnLow := pendingFillOnLow
+
+// label แจ้งยกเลิก (expired / opposite signal / new swing สำหรับ breakout)
+if (pendExpired or pendOpposite or pendNewSwing) and not na(pendingEntry)
+    string cancelReason = pendExpired ? "expired" : pendNewSwing ? "new swing" : "opposite signal"
+    label.new(bar_index, pendingEntry,
+         text="CANCEL PENDING (" + cancelReason + ")",
+         style=pendingDir == 1 ? label.style_label_down : label.style_label_up,
+         color=color.new(color.gray, 25), textcolor=color.white, size=size.tiny)
+
+// เคลียร์ pending state (หลัง fill / expire / opposite / new swing)
+if fillBuy or fillSell or pendExpired or pendOpposite or pendNewSwing
+    if not na(pendingLine)
+        line.delete(pendingLine)
+    if not na(pendingLabel)
+        label.delete(pendingLabel)
+    pendingDir := 0
+    pendingEntry := na
+    pendingSL := na
+    pendingTP := na
+    pendingRisk := na
+    pendingLot := na
+    pendingCreateBar := na
+    pendingTag := ""
+    pendingFillOnLow := false
+    pendingIsBreakout := false
+    pendingPatDir := 0
+    pendingLine := na
+    pendingLabel := na
+
+// ==================================================================
 // === Exit check (SL/TP เท่านั้น) ===
 // ==================================================================
+// แท่งที่ position เพิ่ง fill จาก pending (sameBarFill): เช็คได้เฉพาะฝั่งที่ราคา
+// "วิ่งต่อหลังจุด fill" แน่นอนเท่านั้น —
+//   fill ขาลง (tradeFilledOnLow)  -> ราคาผ่าน entry ลงไปถึง low ของแท่ง
+//                                    เช็คเฉพาะ level ใต้ entry (SL ของ Long / TP ของ Short)
+//   fill ขาขึ้น (fill on high)     -> ราคาผ่าน entry ขึ้นไปถึง high ของแท่ง
+//                                    เช็คเฉพาะ level เหนือ entry (TP ของ Long / SL ของ Short)
+// ฝั่งตรงข้ามไม่รู้ลำดับ intra-bar (extreme อาจเกิดก่อน fill) -> รอเช็คแท่งถัดไป
+bool sameBarFill = not na(tradeBarIdx) and tradeBarIdx == bar_index
 if barstate.isconfirmed and posDir == 1
-    if low <= slPrice
+    if (not sameBarFill or tradeFilledOnLow) and low <= slPrice
         exitLongEvent := true
         exitBySL := true
         exitReason := "SL hit"
-    else if not na(tpPrice) and high >= tpPrice
+    else if (not sameBarFill or not tradeFilledOnLow) and not na(tpPrice) and high >= tpPrice
         exitLongEvent := true
         exitByTP := true
         exitReason := "TP hit"
 
 if barstate.isconfirmed and posDir == -1
-    if high >= slPrice
+    if (not sameBarFill or not tradeFilledOnLow) and high >= slPrice
         exitShortEvent := true
         exitBySL := true
         exitReason := "SL hit"
-    else if not na(tpPrice) and low <= tpPrice
+    else if (not sameBarFill or tradeFilledOnLow) and not na(tpPrice) and low <= tpPrice
         exitShortEvent := true
         exitByTP := true
         exitReason := "TP hit"
 
 // --- Execute exit: V10.1 visuals + SL/TP line style change + Recovery ---
 if exitLongEvent
-    exitPx = exitBySL ? math.min(open, slPrice) : math.max(open, tpPrice)
+    // แท่งเดียวกับที่เพิ่ง fill: ราคาอ้างอิงคือราคา fill (entryPrice) ไม่ใช่ open ของแท่ง
+    float refPxL = tradeBarIdx == bar_index ? entryPrice : open
+    exitPx = exitBySL ? math.min(refPxL, slPrice) : math.max(refPxL, tpPrice)
     float pnlDistL = exitPx - entryPrice
     float actualRL = initRisk > 0 ? pnlDistL / initRisk : 0.0
     f_recordResult(pnlDistL, initRisk, tradeTime, tradeTag)
@@ -549,7 +641,8 @@ if exitLongEvent
     bool willRecL = inpUseRecovery and exitBySL and not isRecTrade
     if willRecL
         int recDirL = inpRecDir == "Same" ? 1 : -1
-        float rEntL = recDirL == 1 ? slPrice + inpSpreadPts : slPrice - inpSpreadPts
+        // เข้าที่ exitPx (ราคา exit ที่ตลาดเทรดจริง) ไม่ใช่ slPrice — กันออเดอร์ผีตอน gap ข้าม SL
+        float rEntL = recDirL == 1 ? exitPx + inpSpreadPts : exitPx - inpSpreadPts
         float rOneRL = initRisk
         float rSlL = recDirL == 1 ? rEntL - rOneRL : rEntL + rOneRL
         float rTpL = recDirL == 1 ? rEntL + rOneRL * inpRecRRRatio : rEntL - rOneRL * inpRecRRRatio
@@ -581,7 +674,9 @@ if exitLongEvent
         isRecTrade := false
 
 if exitShortEvent
-    exitPx = exitBySL ? math.max(open, slPrice) : math.min(open, tpPrice)
+    // แท่งเดียวกับที่เพิ่ง fill: ราคาอ้างอิงคือราคา fill (entryPrice) ไม่ใช่ open ของแท่ง
+    float refPxS = tradeBarIdx == bar_index ? entryPrice : open
+    exitPx = exitBySL ? math.max(refPxS, slPrice) : math.min(refPxS, tpPrice)
     float pnlDistS = entryPrice - exitPx
     float actualRS = initRisk > 0 ? pnlDistS / initRisk : 0.0
     f_recordResult(pnlDistS, initRisk, tradeTime, tradeTag)
@@ -620,7 +715,8 @@ if exitShortEvent
     bool willRecS = inpUseRecovery and exitBySL and not isRecTrade
     if willRecS
         int recDirS = inpRecDir == "Same" ? -1 : 1
-        float rEntS = recDirS == 1 ? slPrice + inpSpreadPts : slPrice - inpSpreadPts
+        // เข้าที่ exitPx (ราคา exit ที่ตลาดเทรดจริง) ไม่ใช่ slPrice — กันออเดอร์ผีตอน gap ข้าม SL
+        float rEntS = recDirS == 1 ? exitPx + inpSpreadPts : exitPx - inpSpreadPts
         float rOneRS = initRisk
         float rSlS = recDirS == 1 ? rEntS - rOneRS : rEntS + rOneRS
         float rTpS = recDirS == 1 ? rEntS + rOneRS * inpRecRRRatio : rEntS - rOneRS * inpRecRRRatio
@@ -650,80 +746,6 @@ if exitShortEvent
         tpLine := na
         tradeBarIdx := na
         isRecTrade := false
-
-// ==================================================================
-// === Pending order fill / expire / cancel ===
-// ==================================================================
-// ราคาถอยเข้ามาถึง pullback level -> fill (แปลง pending เป็น position)
-// fill trigger ขึ้นกับว่า baseEnt อยู่ฝั่งไหนของราคาตอนสร้าง pending (pendingFillOnLow)
-// ไม่ใช่ทิศทางการเทรด (pendingDir) — สำคัญมากตอน Reverse mode
-bool pendingHit  = pendingDir != 0 and posDir == 0 and (pendingFillOnLow ? low <= pendingEntry : high >= pendingEntry)
-bool fillBuy  = barstate.isconfirmed and pendingDir == 1  and pendingHit
-bool fillSell = barstate.isconfirmed and pendingDir == -1 and pendingHit
-bool pendExpired = barstate.isconfirmed and pendingDir != 0 and not fillBuy and not fillSell and inpPlanExpireBars > 0 and bar_index - pendingCreateBar >= inpPlanExpireBars
-bool pendOpposite = barstate.isconfirmed and not fillBuy and not fillSell and not pendExpired and ((pendingDir == 1 and sellSignal) or (pendingDir == -1 and buySignal))
-bool pendNewSwing = barstate.isconfirmed and pendingDir != 0 and pendingIsBreakout and not fillBuy and not fillSell and not pendExpired and not pendOpposite and (newHighConfirmed or newLowConfirmed)
-
-// ราคา fill จริง: ถ้าแท่ง gap ข้าม level -> fill ที่ราคาเปิดแท่ง (ราคาที่ตลาดเทรดจริง)
-// ไม่ใช่ที่ level เดิมซึ่งตลาดไม่เคยแตะ
-if fillBuy
-    float fillPx1 = pendingFillOnLow ? math.min(open, pendingEntry) : math.max(open, pendingEntry)
-    float fillRisk1 = math.abs(fillPx1 - pendingSL)
-    [sLn1, tLn1] = f_drawEntry(1, fillPx1, pendingSL, pendingTP, fillRisk1, pendingLot, pendingTag)
-    posDir := 1
-    entryPrice := fillPx1
-    slPrice := pendingSL
-    tpPrice := pendingTP
-    initRisk := fillRisk1
-    lotSize := pendingLot
-    tradeTime := time
-    tradeTag := pendingTag
-    slLine := sLn1
-    tpLine := tLn1
-    tradeBarIdx := bar_index
-
-if fillSell
-    float fillPx2 = pendingFillOnLow ? math.min(open, pendingEntry) : math.max(open, pendingEntry)
-    float fillRisk2 = math.abs(fillPx2 - pendingSL)
-    [sLn2, tLn2] = f_drawEntry(-1, fillPx2, pendingSL, pendingTP, fillRisk2, pendingLot, pendingTag)
-    posDir := -1
-    entryPrice := fillPx2
-    slPrice := pendingSL
-    tpPrice := pendingTP
-    initRisk := fillRisk2
-    lotSize := pendingLot
-    tradeTime := time
-    tradeTag := pendingTag
-    slLine := sLn2
-    tpLine := tLn2
-    tradeBarIdx := bar_index
-
-// label แจ้งยกเลิก (expired / opposite signal / new swing สำหรับ breakout)
-if (pendExpired or pendOpposite or pendNewSwing) and not na(pendingEntry)
-    string cancelReason = pendExpired ? "expired" : pendNewSwing ? "new swing" : "opposite signal"
-    label.new(bar_index, pendingEntry,
-         text="CANCEL PENDING (" + cancelReason + ")",
-         style=pendingDir == 1 ? label.style_label_down : label.style_label_up,
-         color=color.new(color.gray, 25), textcolor=color.white, size=size.tiny)
-
-// เคลียร์ pending state (หลัง fill / expire / opposite / new swing)
-if fillBuy or fillSell or pendExpired or pendOpposite or pendNewSwing
-    if not na(pendingLine)
-        line.delete(pendingLine)
-    if not na(pendingLabel)
-        label.delete(pendingLabel)
-    pendingDir := 0
-    pendingEntry := na
-    pendingSL := na
-    pendingTP := na
-    pendingRisk := na
-    pendingLot := na
-    pendingCreateBar := na
-    pendingTag := ""
-    pendingFillOnLow := false
-    pendingIsBreakout := false
-    pendingLine := na
-    pendingLabel := na
 
 // ==================================================================
 // === Entry: สร้าง position (Market) หรือ pending order (Pullback / Breakout) ===
@@ -761,6 +783,7 @@ if barstate.isconfirmed and buySignal and posDir == 0 and pendingDir == 0
         pendingTag       := tagStr
         pendingFillOnLow := true
         pendingIsBreakout := false
+        pendingPatDir    := 1
         pendingLine := line.new(bar_index, ent, bar_index + 20, ent,
              color=pcol, style=line.style_dashed, width=2)
         pendingLabel := label.new(bar_index, ent,
@@ -787,6 +810,7 @@ if barstate.isconfirmed and buySignal and posDir == 0 and pendingDir == 0
         pendingTag       := tagStr
         pendingFillOnLow := false
         pendingIsBreakout := true
+        pendingPatDir    := 1
         pendingLine := line.new(bar_index, ent, bar_index + 20, ent,
              color=pcol, style=line.style_dashed, width=2)
         pendingLabel := label.new(bar_index, ent,
@@ -847,6 +871,7 @@ if barstate.isconfirmed and sellSignal and posDir == 0 and pendingDir == 0
         pendingTag       := tagStr
         pendingFillOnLow := false
         pendingIsBreakout := false
+        pendingPatDir    := -1
         pendingLine := line.new(bar_index, ent, bar_index + 20, ent,
              color=pcol, style=line.style_dashed, width=2)
         pendingLabel := label.new(bar_index, ent,
@@ -873,6 +898,7 @@ if barstate.isconfirmed and sellSignal and posDir == 0 and pendingDir == 0
         pendingTag       := tagStr
         pendingFillOnLow := true
         pendingIsBreakout := true
+        pendingPatDir    := -1
         pendingLine := line.new(bar_index, ent, bar_index + 20, ent,
              color=pcol, style=line.style_dashed, width=2)
         pendingLabel := label.new(bar_index, ent,
