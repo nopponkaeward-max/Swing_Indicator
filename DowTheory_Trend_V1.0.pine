@@ -33,10 +33,17 @@ inpShowPanel    = input.bool(true, "Show Info Panel")
 inpEnableEntry     = input.bool(true, "Enable Frame Break Entries", group="Entry Signals")
 inpShowPatternBox  = input.bool(true, "Show LL→HH / HH→LL Frame Box", group="Entry Signals", tooltip="วาดกรอบครอบช่วง LL ↔ HH ของ frame ที่ confirm เพื่อให้สังเกตกรอบได้ง่าย (เขียว = LL→HH, แดง = HH→LL)")
 
-// --- Entry: Frame Break + Pullback (สไตล์ SessionBreak) ---
+// --- Entry: Frame Break (สไตล์ SessionBreak) ---
 // กรอบ confirm → รอเบรค HH (ขึ้น = BUY) หรือ LL (ลง = SELL)
-// เบรคแล้ว → pending ที่ pullback level ในกรอบ → ราคาถอยกลับมาแตะ → fill
-inpPullbackMode     = input.string("% of Range", "Pullback Mode",
+// Mode 1 Breakout: fill ทันทีที่เบรคกรอบ
+// Mode 2 Pullback: เบรคแล้ว → pending ที่ pullback level ในกรอบ → ราคาถอยกลับมาแตะ → fill
+ENTRY_MODE_BREAKOUT = "1. Breakout"
+ENTRY_MODE_PULLBACK = "2. Pullback"
+
+inpEntryMode        = input.string(ENTRY_MODE_PULLBACK, "Entry Mode",
+     options=[ENTRY_MODE_BREAKOUT, ENTRY_MODE_PULLBACK], group="Entry Mode",
+     tooltip="1. Breakout — fill ทันทีที่ราคาเบรคกรอบ (ที่ราคาขอบกรอบ, gap ข้าม → fill ที่ open)\n2. Pullback — เบรคแล้วรอราคาถอยกลับมาแตะ pullback level ในกรอบจึง fill (ราคาดีกว่า แต่อาจพลาดเทรด)")
+inpPullbackMode     = input.string("% of Range", "Pullback Mode (Mode 2)",
      options=["% of Price", "% of Range"], group="Entry Mode")
 inpPullbackPct      = input.float(0.4, " [% of Price] Pullback %", step=0.05, group="Entry Mode",
      tooltip="ใช้เมื่อ Pullback Mode = % of Price\n • เบรคขึ้น (ผ่าน HH): pullback level = HH - HH × X%\n • เบรคลง (ผ่าน LL): pullback level = LL + LL × X%\n(level อยู่ในกรอบ — รอราคาถอยกลับเข้ามาแตะ)")
@@ -508,31 +515,71 @@ if barstate.isconfirmed and not newFrameEvent and pendingState == 1 and posDir =
     else if brkUp or brkDn
         pendingBrkDir := brkUp ? 1 : -1
         float brkLev = brkUp ? frameHigh : frameLow
-        float frRng  = frameHigh - frameLow
-        float pbDist = inpPullbackMode == "% of Range" ? frRng * (inpPullbackRangePct / 100.0) : brkLev * inpPullbackPct / 100.0
-        pendingEntry := brkUp ? frameHigh - pbDist : frameLow + pbDist
-        pendingFillOnLow := brkUp   // เบรคขึ้น → รอราคาถอยลงมาแตะ (fill on low)
-        pendingState := 2
-        int fillDir = inpReverseTrade ? -pendingBrkDir : pendingBrkDir
-        // visuals: ลบเส้นกรอบ 2 เส้น → เหลือเส้น pullback เส้นเดียว (fuchsia dotted)
-        if not na(pendingLineUp)
-            line.delete(pendingLineUp)
-        if not na(pendingLineDn)
-            line.delete(pendingLineDn)
-        pendingLineDn := na
-        pendingLineUp := line.new(bar_index, pendingEntry, bar_index + 20, pendingEntry,
-             color=color.fuchsia, style=line.style_dotted, width=2)
-        if not na(pendingLabel)
-            label.delete(pendingLabel)
-        pendingLabel := label.new(bar_index, pendingEntry,
-             text="Break " + (brkUp ? "▲ HH" : "▼ LL") + " (" + frameTag + ")\nรอ Pullback → " +
-                 (fillDir == 1 ? "BUY" : "SELL") + (inpReverseTrade ? " ⇄" : "") +
-                 " @ " + str.tostring(pendingEntry, format.mintick),
-             color=color.new(color.fuchsia, 25), textcolor=color.white,
-             style=brkUp ? label.style_label_down : label.style_label_up, size=size.small)
-        // marker วงกลมที่จุดเบรค
-        label.new(bar_index, brkLev, text="",
-             style=label.style_circle, color=color.new(brkUp ? color.blue : color.red, 50), size=size.normal)
+        if inpEntryMode == ENTRY_MODE_BREAKOUT
+            // === Mode 1 Breakout: fill ทันทีที่เบรค (gap ข้าม → fill ที่ open) ===
+            int tradeDirB = inpReverseTrade ? -pendingBrkDir : pendingBrkDir
+            float fillBaseB = brkUp ? math.max(open, brkLev) : math.min(open, brkLev)
+            float entB  = tradeDirB == 1 ? fillBaseB + inpSpreadPts : fillBaseB - inpSpreadPts
+            float oneRB = f_oneR(frameHigh - frameLow)
+            float slB   = tradeDirB == 1 ? entB - oneRB : entB + oneRB
+            float tpB   = tradeDirB == 1 ? entB + oneRB * inpRRRatio : entB - oneRB * inpRRRatio
+            float lotB  = oneRB > 0 ? inpRiskAmount / (oneRB * inpPipValueRatio) : 0
+            string fillTagB = frameTag + (brkUp ? " ▲" : " ▼") + (inpReverseTrade ? " ⇄" : "")
+            [sLnB, tLnB] = f_drawEntry(tradeDirB, entB, slB, tpB, math.abs(entB - slB), lotB, fillTagB)
+            posDir := tradeDirB
+            entryPrice := entB
+            slPrice := slB
+            tpPrice := tpB
+            initRisk := math.abs(entB - slB)
+            lotSize := lotB
+            tradeTime := time
+            tradeTag := fillTagB
+            slLine := sLnB
+            tpLine := tLnB
+            tradeBarIdx := bar_index
+            tradeFilledOnLow := not brkUp   // เบรคขึ้น = fill ขาขึ้น → same-bar เช็คเฉพาะ level เหนือ entry
+            // marker วงกลมที่จุดเบรค + เคลียร์ pending/frame (กรอบนี้ใช้ไปแล้ว)
+            label.new(bar_index, brkLev, text="",
+                 style=label.style_circle, color=color.new(brkUp ? color.blue : color.red, 50), size=size.normal)
+            if not na(pendingLineUp)
+                line.delete(pendingLineUp)
+            if not na(pendingLineDn)
+                line.delete(pendingLineDn)
+            if not na(pendingLabel)
+                label.delete(pendingLabel)
+            pendingLineUp := na
+            pendingLineDn := na
+            pendingLabel := na
+            pendingState := 0
+            pendingBrkDir := 0
+            pendingEntry := na
+        else
+            // === Mode 2 Pullback: ตั้ง pending ที่ pullback level ในกรอบ รอราคาถอยกลับมา ===
+            float frRng  = frameHigh - frameLow
+            float pbDist = inpPullbackMode == "% of Range" ? frRng * (inpPullbackRangePct / 100.0) : brkLev * inpPullbackPct / 100.0
+            pendingEntry := brkUp ? frameHigh - pbDist : frameLow + pbDist
+            pendingFillOnLow := brkUp   // เบรคขึ้น → รอราคาถอยลงมาแตะ (fill on low)
+            pendingState := 2
+            int fillDir = inpReverseTrade ? -pendingBrkDir : pendingBrkDir
+            // visuals: ลบเส้นกรอบ 2 เส้น → เหลือเส้น pullback เส้นเดียว (fuchsia dotted)
+            if not na(pendingLineUp)
+                line.delete(pendingLineUp)
+            if not na(pendingLineDn)
+                line.delete(pendingLineDn)
+            pendingLineDn := na
+            pendingLineUp := line.new(bar_index, pendingEntry, bar_index + 20, pendingEntry,
+                 color=color.fuchsia, style=line.style_dotted, width=2)
+            if not na(pendingLabel)
+                label.delete(pendingLabel)
+            pendingLabel := label.new(bar_index, pendingEntry,
+                 text="Break " + (brkUp ? "▲ HH" : "▼ LL") + " (" + frameTag + ")\nรอ Pullback → " +
+                     (fillDir == 1 ? "BUY" : "SELL") + (inpReverseTrade ? " ⇄" : "") +
+                     " @ " + str.tostring(pendingEntry, format.mintick),
+                 color=color.new(color.fuchsia, 25), textcolor=color.white,
+                 style=brkUp ? label.style_label_down : label.style_label_up, size=size.small)
+            // marker วงกลมที่จุดเบรค
+            label.new(bar_index, brkLev, text="",
+                 style=label.style_circle, color=color.new(brkUp ? color.blue : color.red, 50), size=size.normal)
 
 // --- State 2: เบรคแล้ว — รอราคาถอยกลับมาแตะ pullback level ---
 // (else-if กับ state 1: แท่งที่เพิ่งเบรคจะไม่เข้าบล็อกนี้ — รอเช็คแท่งถัดไป)
@@ -877,11 +924,11 @@ if inpShowPanel and barstate.islast and hCount >= 2 and lCount >= 2
     table.cell(panel, 1, 4, str.tostring(prevLow2, format.mintick), text_color=color.gray, text_size=size.small, text_halign=text.align_left)
 
     table.cell(panel, 0, 5, "Strategy", text_color=color.aqua, text_size=size.small, text_halign=text.align_left)
-    table.cell(panel, 1, 5, inpEnableEntry ? "Frame Break + Pullback (LL→HH / HH→LL)" + (inpReverseTrade ? "  ⇄ REVERSE" : "") : "OFF", text_color=inpReverseTrade ? color.orange : color.aqua, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 1, 5, inpEnableEntry ? "Frame Break (LL→HH / HH→LL)" + (inpReverseTrade ? "  ⇄ REVERSE" : "") : "OFF", text_color=inpReverseTrade ? color.orange : color.aqua, text_size=size.small, text_halign=text.align_left)
 
     string oneRLabel = inpOneRBasis == ONER_DIST ? "Distance " + str.tostring(inpOneRDistFix) : inpOneRBasis == ONER_ATR ? "ATR×" + str.tostring(inpOneRAtrMult) : "SL% " + str.tostring(inpOneRPctVal, "#.#") + "%"
     table.cell(panel, 0, 6, "Entry / 1R", text_color=color.aqua, text_size=size.small, text_halign=text.align_left)
-    table.cell(panel, 1, 6, "Break+PB  ·  1R: " + oneRLabel + "  ·  RR 1:" + str.tostring(inpRRRatio, "#.#"), text_color=color.aqua, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 1, 6, inpEntryMode + "  ·  1R: " + oneRLabel + "  ·  RR 1:" + str.tostring(inpRRRatio, "#.#"), text_color=color.aqua, text_size=size.small, text_halign=text.align_left)
 
     posText  = posDir == 1 ? "LONG @ " + str.tostring(entryPrice, format.mintick) : posDir == -1 ? "SHORT @ " + str.tostring(entryPrice, format.mintick) : "FLAT"
     posColor = posDir == 1 ? inpUpColor : posDir == -1 ? inpDownColor : color.gray
@@ -1040,8 +1087,8 @@ if showStatsTable and barstate.islast
         periodStr := "Last " + str.tostring(statMonths) + " Months"
     else if statMode == "3. เจาะจงเดือนและปี (Specific Month)"
         periodStr := statTargetM + " " + str.tostring(actualTargetY)
-    string stratShort = inpEnableEntry ? (inpReverseTrade ? "Frame Break+PB ⇄" : "Frame Break+PB") : "OFF"
-    string tpModeStr  = "Break+PB  ·  RR 1:" + str.tostring(inpRRRatio, "#.#") + (inpReverseTrade ? "  ·  ⇄" : "")
+    string stratShort = inpEnableEntry ? (inpReverseTrade ? "Frame Break ⇄" : "Frame Break") : "OFF"
+    string tpModeStr  = inpEntryMode + "  ·  RR 1:" + str.tostring(inpRRRatio, "#.#") + (inpReverseTrade ? "  ·  ⇄" : "")
     table.cell(statsTable, 0, 0,  "◆  DOW THEORY PERFORMANCE", text_color=lxTitleTx, text_size=size.small, bgcolor=lxHeadBg)
     table.cell(statsTable, 0, 1,  periodStr + "  ·  " + syminfo.ticker + " " + timeframe.period, text_color=lxMuted, text_size=size.tiny, bgcolor=lxSubBg)
     table.cell(statsTable, 0, 2,  "Strategy",   text_color=lxMuted, text_size=size.tiny,  bgcolor=lxRowA, text_halign=text.align_left)
