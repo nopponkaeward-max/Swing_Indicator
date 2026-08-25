@@ -43,9 +43,6 @@ inpPullbackPct      = input.float(0.4, " [% of Price] Pullback %", step=0.05, gr
 inpPullbackRangePct = input.float(30, " [% of Range] Pullback %",
      minval=1, maxval=100, step=5, group="Entry Mode",
      tooltip="ใช้เมื่อ Pullback Mode = % of Range — X% ของช่วงกรอบ (HH-LL)\n • เบรคขึ้น (ผ่าน HH): pullback level = HH - (HH-LL) × X%\n • เบรคลง (ผ่าน LL): pullback level = LL + (HH-LL) × X%\n(level อยู่ในกรอบ — รอราคาถอยกลับเข้ามาแตะ เหมือน pullback หลังเบรค session)")
-inpPlanExpireBars   = input.int(50, "Frame Expiry (bars, 0 = no expiry)",
-     minval=0, group="Entry Mode",
-     tooltip="นับจากแท่งที่กรอบ confirm — ถ้ายังไม่ fill ภายใน N แท่ง (ไม่ว่ารอเบรคหรือรอ pullback อยู่) → ยกเลิกกรอบ\n0 = ไม่หมดอายุ (รอจนกว่าจะ fill หรือมีกรอบใหม่มาแทน)")
 inpReverseTrade     = input.bool(false, "Reverse Trade (fade the break)",
      group="Entry Mode",
      tooltip="เปิด = พลิกทิศเทรด (bet ว่าการเบรคเป็นสัญญาณหลอก)\n • เบรคขึ้นผ่าน HH → SELL แทน BUY (fill ที่ pullback level เดิม)\n • เบรคลงผ่าน LL → BUY แทน SELL\n\nจุด fill ไม่เปลี่ยน (ยังรอราคาถอยกลับมาแตะ level ในกรอบ) เปลี่ยนแค่ทิศเทรด")
@@ -399,7 +396,6 @@ var int    pendingBrkDir    = 0     // ทิศที่เบรค: 1 = เ�
 var float  frameHigh        = na    // HH ของกรอบปัจจุบัน
 var float  frameLow         = na    // LL ของกรอบปัจจุบัน
 var string frameTag         = ""    // "LL→HH" (bull) / "HH→LL" (bear)
-var int    frameCreateBar   = na    // แท่งที่กรอบ confirm (ใช้นับ expiry)
 var float  pendingEntry     = na    // pullback level (ตั้งตอนเบรค — state 2)
 var bool   pendingFillOnLow = false // true = fill เมื่อ low<=level (หลังเบรคขึ้น), false = fill เมื่อ high>=level (หลังเบรคลง)
 var line   pendingLineUp    = na    // เส้นขอบบน (state 1) / เส้น pullback (state 2)
@@ -482,7 +478,6 @@ f_drawEntry(int dir, float ent, float sl, float tp, float risk, float lot, strin
 // ==================================================================
 // สไตล์ V10.1 SessionBreak: state เดินทีละขั้นต่อแท่ง (แท่งที่เบรคจะยังไม่เช็ค
 // pullback ในแท่งเดียวกัน — ไม่รู้ลำดับ intra-bar)
-bool stateMoved = false   // มี transition ในแท่งนี้แล้ว (กัน expiry ซ้อนแท่งเดียวกัน)
 
 // --- State 1: armed — รอราคาเบรคกรอบ (OCO บน/ล่าง) ---
 if barstate.isconfirmed and pendingState == 1 and posDir == 0
@@ -506,7 +501,6 @@ if barstate.isconfirmed and pendingState == 1 and posDir == 0
         pendingState := 0
         pendingBrkDir := 0
         pendingEntry := na
-        stateMoved := true
     else if brkUp or brkDn
         pendingBrkDir := brkUp ? 1 : -1
         float brkLev = brkUp ? frameHigh : frameLow
@@ -515,7 +509,6 @@ if barstate.isconfirmed and pendingState == 1 and posDir == 0
         pendingEntry := brkUp ? frameHigh - pbDist : frameLow + pbDist
         pendingFillOnLow := brkUp   // เบรคขึ้น → รอราคาถอยลงมาแตะ (fill on low)
         pendingState := 2
-        stateMoved := true
         int fillDir = inpReverseTrade ? -pendingBrkDir : pendingBrkDir
         // visuals: ลบเส้นกรอบ 2 เส้น → เหลือเส้น pullback เส้นเดียว (fuchsia dotted)
         if not na(pendingLineUp)
@@ -538,7 +531,7 @@ if barstate.isconfirmed and pendingState == 1 and posDir == 0
              style=label.style_circle, color=color.new(brkUp ? color.blue : color.red, 50), size=size.normal)
 
 // --- State 2: เบรคแล้ว — รอราคาถอยกลับมาแตะ pullback level ---
-// (else-if กับ state 1 โดยปริยาย: แท่งที่เพิ่งเบรค stateMoved=true จะไม่เข้าบล็อกนี้)
+// (else-if กับ state 1: แท่งที่เพิ่งเบรคจะไม่เข้าบล็อกนี้ — รอเช็คแท่งถัดไป)
 else if barstate.isconfirmed and pendingState == 2 and posDir == 0
     bool pbHit = pendingFillOnLow ? low <= pendingEntry : high >= pendingEntry
     if pbHit
@@ -574,26 +567,7 @@ else if barstate.isconfirmed and pendingState == 2 and posDir == 0
         pendingState := 0
         pendingBrkDir := 0
         pendingEntry := na
-        stateMoved := true
-
-// --- Expiry: นับจากแท่งที่กรอบ confirm (ทั้ง state 1 และ 2) ---
-if barstate.isconfirmed and pendingState != 0 and not stateMoved and inpPlanExpireBars > 0 and bar_index - frameCreateBar >= inpPlanExpireBars
-    label.new(bar_index, pendingState == 2 ? pendingEntry : close,
-         text="CANCEL FRAME (expired)",
-         style=label.style_label_down, color=color.new(color.gray, 25),
-         textcolor=color.white, size=size.tiny)
-    if not na(pendingLineUp)
-        line.delete(pendingLineUp)
-    if not na(pendingLineDn)
-        line.delete(pendingLineDn)
-    if not na(pendingLabel)
-        label.delete(pendingLabel)
-    pendingLineUp := na
-    pendingLineDn := na
-    pendingLabel := na
-    pendingState := 0
-    pendingBrkDir := 0
-    pendingEntry := na
+// (ไม่มี expiry — กรอบ/pending/position ถูกยกเลิกได้ทางเดียวคือกรอบใหม่ confirm)
 
 // ==================================================================
 // === Exit check (SL/TP เท่านั้น) ===
@@ -847,7 +821,6 @@ if newFrameEvent
     frameHigh := hhPrice
     frameLow  := llPrice
     frameTag  := frameBullSignal ? "LL→HH" : "HH→LL"
-    frameCreateBar := bar_index
     pendingState := 1
     pendingBrkDir := 0
     pendingEntry := na
