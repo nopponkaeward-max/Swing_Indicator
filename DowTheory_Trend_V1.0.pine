@@ -1,17 +1,18 @@
 // This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
 // © Dow Theory EA - Converted to Pine Script v6
-// EA Dow Theory - Auto Swing + Trendline + Dow Confirmation Entry + Stats
+// EA Dow Theory - Auto Swing + Trendline + Frame Break + Pullback Entry + Stats
 // 1. หา Swing High/Low อัตโนมัติ (Fractal)
 // 2. วาด Trendline เขียว(ขึ้น) แดง(ลง)
 // 3. บอกสถานะ Trend ปัจจุบัน HH/HL/LH/LL
-// 4. สัญญาณเข้าเทรดแบบ Dow Theory Confirmation (3-swing sequence):
-//    - Buy  : LL -> HH -> HL confirm (ต้องเรียงติดกัน ห้าม LH คั่น) -> เข้า Buy ที่แท่งที่ HL confirm
-//    - Sell : HH -> LL -> LH confirm (ต้องเรียงติดกัน ห้าม HL คั่น) -> เข้า Sell ที่แท่งที่ LH confirm
-//    วาดเส้นเล็ก ๆ ที่ระดับราคาเปิดออเดอร์เป็น marker
-// 5. Entry Mode: Pullback อย่างเดียว (pending order รอ dip ลึกกว่า HL / bounce สูงกว่า LH)
-//    + Risk Management: 1R Basis (SL% / Distance / ATR),
+// 4. ระบบเทรดแบบ Frame Break + Pullback (สไตล์ SessionBreak แต่ใช้กรอบ Dow แทน session):
+//    - กรอบ = LL→HH หรือ HH→LL (strict adjacency, 2-swing) → กรอบบน = HH, กรอบล่าง = LL
+//    - กรอบ confirm → arm รอเบรค (OCO 2 ฝั่ง): เบรคขึ้นผ่าน HH = BUY, เบรคลงผ่าน LL = SELL
+//    - เบรคแล้ว → ตั้ง pending ที่ pullback level (% ของกรอบ วัดเข้าไปในกรอบจากขอบที่เบรค)
+//    - ราคาถอยกลับเข้ามาแตะ level → fill (SL = ent±1R, TP = ent±1R×RR)
+//    - กรอบใหม่ confirm → ยกเลิก pending และปิด position เดิมทั้งหมด (ที่ราคา close)
+// 5. Risk Management: 1R Basis (SL% ของกรอบ / Distance / ATR),
 //    Risk per 1R ($) → คำนวณ Lot อัตโนมัติ, R:R Ratio, Spread
-//    Exit เหลือแค่ SL / TP hit เท่านั้น
+//    Exit: SL / TP hit หรือ New Frame close
 // 6. Stats tables สไตล์ V10.1: Main Stats / By Day / Daily Log / Monthly
 
 //@version=6
@@ -29,23 +30,25 @@ inpShowPanel    = input.bool(true, "Show Info Panel")
 // --- Entry Signals: Dow Theory Confirmation (3-swing) ---
 // Buy  : LL แล้วตามด้วย HH -> เข้า Buy เมื่อ HH confirm
 // Sell : HH แล้วตามด้วย LL -> เข้า Sell เมื่อ LL confirm
-inpEnableEntry     = input.bool(true, "Enable Dow Confirmation Entries", group="Entry Signals")
-inpShowPatternBox  = input.bool(true, "Show LL→HH→HL / HH→LL→LH Pattern Box", group="Entry Signals", tooltip="วาดกรอบครอบช่วง LL → HH → HL (สำหรับ Buy) หรือ HH → LL → LH (สำหรับ Sell) เพื่อให้สังเกต pattern ได้ง่าย")
+inpEnableEntry     = input.bool(true, "Enable Frame Break Entries", group="Entry Signals")
+inpShowPatternBox  = input.bool(true, "Show LL→HH / HH→LL Frame Box", group="Entry Signals", tooltip="วาดกรอบครอบช่วง LL ↔ HH ของ frame ที่ confirm เพื่อให้สังเกตกรอบได้ง่าย (เขียว = LL→HH, แดง = HH→LL)")
 
-// --- Entry Mode: Pullback only (pending order รอราคา dip/bounce หลัง HL/LH confirm) ---
+// --- Entry: Frame Break + Pullback (สไตล์ SessionBreak) ---
+// กรอบ confirm → รอเบรค HH (ขึ้น = BUY) หรือ LL (ลง = SELL)
+// เบรคแล้ว → pending ที่ pullback level ในกรอบ → ราคาถอยกลับมาแตะ → fill
 inpPullbackMode     = input.string("% of Range", "Pullback Mode",
      options=["% of Price", "% of Range"], group="Entry Mode")
 inpPullbackPct      = input.float(0.4, " [% of Price] Pullback %", step=0.05, group="Entry Mode",
-     tooltip="ใช้เมื่อ Pullback Mode = % of Price\n • BUY: pullback level = HL - HL × X% (dip ต่ำกว่า HL อีก X% ของราคา HL)\n • SELL: pullback level = LH + LH × X% (bounce สูงกว่า LH อีก X% ของราคา LH)")
+     tooltip="ใช้เมื่อ Pullback Mode = % of Price\n • เบรคขึ้น (ผ่าน HH): pullback level = HH - HH × X%\n • เบรคลง (ผ่าน LL): pullback level = LL + LL × X%\n(level อยู่ในกรอบ — รอราคาถอยกลับเข้ามาแตะ)")
 inpPullbackRangePct = input.float(30, " [% of Range] Pullback %",
      minval=1, maxval=100, step=5, group="Entry Mode",
-     tooltip="ใช้เมื่อ Pullback Mode = % of Range\n • BUY: pullback level = HL - (HH-HL) × X% (dip ต่ำกว่า HL อีก X% ของช่วง HH-HL)\n • SELL: pullback level = LH + (LH-LL) × X% (bounce สูงกว่า LH อีก X% ของช่วง LH-LL)\n\nหมายเหตุ: HL/LH เพิ่ง confirm (เป็นก้นของ pullback / ยอดของ retracement แล้ว)\nPullback mode รอ dip/bounce ที่ลึก/สูงกว่านั้นอีก — ถ้าราคาไปถึงหมายความว่า pattern เริ่มเสี่ยงเสีย")
-inpPlanExpireBars   = input.int(50, "Pending Order Expiry (bars, 0 = no expiry)",
+     tooltip="ใช้เมื่อ Pullback Mode = % of Range — X% ของช่วงกรอบ (HH-LL)\n • เบรคขึ้น (ผ่าน HH): pullback level = HH - (HH-LL) × X%\n • เบรคลง (ผ่าน LL): pullback level = LL + (HH-LL) × X%\n(level อยู่ในกรอบ — รอราคาถอยกลับเข้ามาแตะ เหมือน pullback หลังเบรค session)")
+inpPlanExpireBars   = input.int(50, "Frame Expiry (bars, 0 = no expiry)",
      minval=0, group="Entry Mode",
-     tooltip="ถ้าราคาไม่ถึง pullback level ภายใน N แท่ง → ยกเลิก pending อัตโนมัติ\n0 = ไม่หมดอายุ (รอไปเรื่อย ๆ จนกว่าจะ fill หรือมีสัญญาณตรงข้าม/swing ใหม่มา cancel)")
-inpReverseTrade     = input.bool(false, "Reverse Trade (fade the pattern)",
+     tooltip="นับจากแท่งที่กรอบ confirm — ถ้ายังไม่ fill ภายใน N แท่ง (ไม่ว่ารอเบรคหรือรอ pullback อยู่) → ยกเลิกกรอบ\n0 = ไม่หมดอายุ (รอจนกว่าจะ fill หรือมีกรอบใหม่มาแทน)")
+inpReverseTrade     = input.bool(false, "Reverse Trade (fade the break)",
      group="Entry Mode",
-     tooltip="เปิด = พลิกทิศเทรด (bet ว่า pattern เป็นสัญญาณหลอก)\n • LL→HH→HL detected → SELL แทน BUY\n • HH→LL→LH detected → BUY แทน SELL\n\nเหมาะกับกรณีที่มองว่า pattern น่าจะเป็น false-breakout (เช่นใน sideways market)")
+     tooltip="เปิด = พลิกทิศเทรด (bet ว่าการเบรคเป็นสัญญาณหลอก)\n • เบรคขึ้นผ่าน HH → SELL แทน BUY (fill ที่ pullback level เดิม)\n • เบรคลงผ่าน LL → BUY แทน SELL\n\nจุด fill ไม่เปลี่ยน (ยังรอราคาถอยกลับมาแตะ level ในกรอบ) เปลี่ยนแค่ทิศเทรด")
 
 // --- Recovery Mode (Normal) ---
 inpUseRecovery  = input.bool(false, "Enable Recovery", group="Recovery Mode",
@@ -285,14 +288,11 @@ if hCount >= 2 and lCount >= 2
 // === Entry Signals ===
 // ==================================================================
 
-// --- Swing sequence tracker (3-swing Dow Theory Confirmation) ---
-// ต้องเรียง 3 pivot ติดกัน ห้ามมี swing อื่นคั่น:
-//   [LL] -> [HH] -> [HL]  -> BUY  (HL confirm ที่แท่งปัจจุบัน)
-//   [HH] -> [LL] -> [LH]  -> SELL (LH confirm ที่แท่งปัจจุบัน)
-// ตรวจ strict-adjacency ผ่าน (prevSwingType, lastSwingType) — swing ทุกตัวที่มา
-// จะ shift สอง slot ทำให้ chain ที่ถูกแทรกจะไม่ตรงกับ (prev, last) ที่ต้องการ
-// pattern จึงถูกยกเลิกอัตโนมัติ
-var string prevSwingType = ""   // swing ก่อนหน้า swing ล่าสุด
+// --- Swing sequence tracker (2-swing frame) ---
+// กรอบต้องเป็นสอง pivot ติดกัน ห้ามมี swing อื่นคั่น:
+//   [LL] -> [HH] ติดกัน -> Bull frame (HH confirm ที่แท่งปัจจุบัน)
+//   [HH] -> [LL] ติดกัน -> Bear frame (LL confirm ที่แท่งปัจจุบัน)
+// ถ้ามี LH/HL คั่น lastSwingType จะถูก overwrite ทำให้กรอบไม่ถูกนับ
 var string lastSwingType = ""   // "HH" / "LH" / "HL" / "LL" — swing ล่าสุด (ทุกฝั่ง)
 var int    llBar         = na   // bar_index ของ pivot LL ล่าสุด (ใช้วาดกรอบ + คำนวณ risk)
 var float  llPrice       = na   // ราคาของ pivot LL ล่าสุด
@@ -322,45 +322,43 @@ if newLowConfirmed
     float prevL = array.get(swingLowPrices, lCount - 2)
     newLowType := newLowPrice > prevL ? "HL" : "LL"
 
-// สัญญาณ: ต้องครบ 3 swing เรียงติดกัน ห้ามมี swing อื่นแทรก
-// เช็คก่อน update state เพื่อให้ (prevSwingType, lastSwingType) ยังเป็นของสอง swing ที่ผ่านมา
-// - BUY: swing ที่กำลัง confirm ต้องเป็น HL, last=HH, prev=LL
-// - SELL: swing ที่กำลัง confirm ต้องเป็น LH, last=LL, prev=HH
-buySignal  = inpEnableEntry and newLowConfirmed  and newLowType  == "HL" and lastSwingType == "HH" and prevSwingType == "LL"
-sellSignal = inpEnableEntry and newHighConfirmed and newHighType == "LH" and lastSwingType == "LL" and prevSwingType == "HH"
+// Frame signal: กรอบใหม่ confirm — 2-swing strict adjacency
+// - Bull frame: LL แล้วต่อด้วย HH ทันที (HH confirm แท่งนี้)
+// - Bear frame: HH แล้วต่อด้วย LL ทันที (LL confirm แท่งนี้)
+// เช็คก่อน update lastSwingType เพื่อให้ค่ายังเป็นของ swing ก่อนหน้า
+frameBullSignal = inpEnableEntry and newHighConfirmed and newHighType == "HH" and lastSwingType == "LL"
+frameBearSignal = inpEnableEntry and newLowConfirmed  and newLowType  == "LL" and lastSwingType == "HH"
 
-// --- วาดกรอบ Pattern (ก่อน update state — ใช้ llBar/llPrice, hhBar/hhPrice ตัวเก่า) ---
-// BUY box: LL → HH → HL (left=LL bar, right=HL pivot bar, top=HH, bottom=LL)
-if barstate.isconfirmed and buySignal and inpShowPatternBox and not na(llBar) and not na(llPrice) and not na(hhBar) and not na(hhPrice)
-    box.new(left=llBar, top=hhPrice, right=newLowBar, bottom=llPrice,
+// --- วาดกรอบ Frame (ก่อน update state — ใช้ llBar/llPrice หรือ hhBar/hhPrice ตัวเก่า) ---
+// Bull frame box: LL → HH (เขียว)
+if barstate.isconfirmed and frameBullSignal and inpShowPatternBox and not na(llBar) and not na(llPrice)
+    box.new(left=llBar, top=newHighPrice, right=newHighBar, bottom=llPrice,
          bgcolor=color.new(inpUpColor, 88),
          border_color=color.new(inpUpColor, 40),
          border_width=1, border_style=line.style_dashed,
-         text="LL → HH → HL", text_size=size.tiny,
+         text="LL → HH", text_size=size.tiny,
          text_color=color.new(inpUpColor, 15),
          text_halign=text.align_left, text_valign=text.align_top)
 
-// SELL box: HH → LL → LH (left=HH bar, right=LH pivot bar, top=HH, bottom=LL)
-if barstate.isconfirmed and sellSignal and inpShowPatternBox and not na(hhBar) and not na(hhPrice) and not na(llBar) and not na(llPrice)
-    box.new(left=hhBar, top=hhPrice, right=newHighBar, bottom=llPrice,
+// Bear frame box: HH → LL (แดง)
+if barstate.isconfirmed and frameBearSignal and inpShowPatternBox and not na(hhBar) and not na(hhPrice)
+    box.new(left=hhBar, top=hhPrice, right=newLowBar, bottom=newLowPrice,
          bgcolor=color.new(inpDownColor, 88),
          border_color=color.new(inpDownColor, 40),
          border_width=1, border_style=line.style_dashed,
-         text="HH → LL → LH", text_size=size.tiny,
+         text="HH → LL", text_size=size.tiny,
          text_color=color.new(inpDownColor, 15),
          text_halign=text.align_left, text_valign=text.align_bottom)
 
 // อัปเดต state สำหรับใช้กับแท่งถัดไป
-// - shift 2 slot: prev <- last, last <- new — swing ใดๆ ที่แทรกจะพัง chain อัตโนมัติ
-// - llBar/llPrice, hhBar/hhPrice เก็บพิกัดของ LL/HH ล่าสุดไว้สำหรับวาดกรอบ + risk calc
+// - lastSwingType ถูก overwrite ทุก swing ใหม่ → swing ที่แทรก (LH/HL) พัง adjacency อัตโนมัติ
+// - llBar/llPrice, hhBar/hhPrice เก็บพิกัดของ LL/HH ล่าสุดไว้สำหรับกรอบ + risk calc
 if newHighConfirmed
-    prevSwingType := lastSwingType
     lastSwingType := newHighType
     if newHighType == "HH"
         hhBar   := newHighBar
         hhPrice := newHighPrice
 if newLowConfirmed
-    prevSwingType := lastSwingType
     lastSwingType := newLowType
     if newLowType == "LL"
         llBar   := newLowBar
@@ -395,20 +393,18 @@ var int    tradeBarIdx = na   // bar_index ตอนเปิดออเดอ�
 var bool   isRecTrade  = false // true = เทรดปัจจุบันเป็น Recovery (ห้าม recover ซ้อน)
 var bool   tradeFilledOnLow = false // ทิศ trigger ตอน fill (ใช้เช็ค same-bar exit เฉพาะฝั่ง deterministic)
 
-// --- Pending order state (สำหรับ Pullback mode) ---
-var int    pendingDir        = 0     // 0/1/-1 (ทิศทางที่จะเทรดจริง หลัง apply reverse)
-var float  pendingEntry      = na
-var float  pendingSL         = na
-var float  pendingTP         = na
-var float  pendingRisk       = na
-var float  pendingLot        = na
-var int    pendingCreateBar  = na
-var string pendingTag        = ""
-var bool   pendingFillOnLow  = false // true = fill เมื่อ low<=entry (baseEnt ต่ำกว่าราคาปัจจุบัน), false = fill เมื่อ high>=entry
-var bool   pendingIsBreakout = false // true = pending เป็น breakout (ยกเลิกเมื่อมี swing ใหม่)
-var int    pendingPatDir     = 0     // ทิศของ "pattern" ที่สร้าง pending (1 = LL→HH→HL, -1 = HH→LL→LH) — ใช้เช็ค opposite signal ให้ถูกแม้เปิด Reverse mode
-var line   pendingLine       = na
-var label  pendingLabel      = na
+// --- Frame / pending state (Frame Break + Pullback) ---
+var int    pendingState     = 0     // 0 = ไม่มีกรอบ, 1 = armed รอเบรค (OCO บน/ล่าง), 2 = เบรคแล้ว รอ pullback
+var int    pendingBrkDir    = 0     // ทิศที่เบรค: 1 = เบรคขึ้น (ผ่าน HH), -1 = เบรคลง (ผ่าน LL)
+var float  frameHigh        = na    // HH ของกรอบปัจจุบัน
+var float  frameLow         = na    // LL ของกรอบปัจจุบัน
+var string frameTag         = ""    // "LL→HH" (bull) / "HH→LL" (bear)
+var int    frameCreateBar   = na    // แท่งที่กรอบ confirm (ใช้นับ expiry)
+var float  pendingEntry     = na    // pullback level (ตั้งตอนเบรค — state 2)
+var bool   pendingFillOnLow = false // true = fill เมื่อ low<=level (หลังเบรคขึ้น), false = fill เมื่อ high>=level (หลังเบรคลง)
+var line   pendingLineUp    = na    // เส้นขอบบน (state 1) / เส้น pullback (state 2)
+var line   pendingLineDn    = na    // เส้นขอบล่าง (state 1)
+var label  pendingLabel     = na
 
 bool exitLongEvent  = false
 bool exitShortEvent = false
@@ -481,84 +477,123 @@ f_drawEntry(int dir, float ent, float sl, float tp, float risk, float lot, strin
     [_slLn, _tpLn]
 
 // ==================================================================
-// === Pending order fill / expire / cancel ===
-// === (ต้องอยู่ก่อน Exit check เพื่อให้แท่งที่ fill ถูกเช็ค SL/TP ต่อได้เลย) ===
+// === Frame state machine: รอเบรค → รอ pullback → fill ===
+// === (อยู่ก่อน Exit check เพื่อให้แท่งที่ fill ถูกเช็ค SL/TP ต่อได้เลย) ===
 // ==================================================================
-// ราคาถอยเข้ามาถึง pullback level -> fill (แปลง pending เป็น position)
-// fill trigger ขึ้นกับว่า baseEnt อยู่ฝั่งไหนของราคาตอนสร้าง pending (pendingFillOnLow)
-// ไม่ใช่ทิศทางการเทรด (pendingDir) — สำคัญมากตอน Reverse mode
-bool pendingHit  = pendingDir != 0 and posDir == 0 and (pendingFillOnLow ? low <= pendingEntry : high >= pendingEntry)
-bool fillBuy  = barstate.isconfirmed and pendingDir == 1  and pendingHit
-bool fillSell = barstate.isconfirmed and pendingDir == -1 and pendingHit
-bool pendExpired = barstate.isconfirmed and pendingDir != 0 and not fillBuy and not fillSell and inpPlanExpireBars > 0 and bar_index - pendingCreateBar >= inpPlanExpireBars
-// opposite = pattern ตรงข้ามกับ pattern ที่สร้าง pending (ใช้ pendingPatDir ไม่ใช่ pendingDir
-// เพื่อให้ถูกต้องแม้เปิด Reverse mode ซึ่งทิศเทรดสวนกับทิศ pattern)
-bool pendOpposite = barstate.isconfirmed and not fillBuy and not fillSell and not pendExpired and ((pendingPatDir == 1 and sellSignal) or (pendingPatDir == -1 and buySignal))
-bool pendNewSwing = barstate.isconfirmed and pendingDir != 0 and pendingIsBreakout and not fillBuy and not fillSell and not pendExpired and not pendOpposite and (newHighConfirmed or newLowConfirmed)
+// สไตล์ V10.1 SessionBreak: state เดินทีละขั้นต่อแท่ง (แท่งที่เบรคจะยังไม่เช็ค
+// pullback ในแท่งเดียวกัน — ไม่รู้ลำดับ intra-bar)
+bool stateMoved = false   // มี transition ในแท่งนี้แล้ว (กัน expiry ซ้อนแท่งเดียวกัน)
 
-// ราคา fill จริง: ถ้าแท่ง gap ข้าม level -> fill ที่ราคาเปิดแท่ง (ราคาที่ตลาดเทรดจริง)
-// ไม่ใช่ที่ level เดิมซึ่งตลาดไม่เคยแตะ
-if fillBuy
-    float fillPx1 = pendingFillOnLow ? math.min(open, pendingEntry) : math.max(open, pendingEntry)
-    float fillRisk1 = math.abs(fillPx1 - pendingSL)
-    [sLn1, tLn1] = f_drawEntry(1, fillPx1, pendingSL, pendingTP, fillRisk1, pendingLot, pendingTag)
-    posDir := 1
-    entryPrice := fillPx1
-    slPrice := pendingSL
-    tpPrice := pendingTP
-    initRisk := fillRisk1
-    lotSize := pendingLot
-    tradeTime := time
-    tradeTag := pendingTag
-    slLine := sLn1
-    tpLine := tLn1
-    tradeBarIdx := bar_index
-    tradeFilledOnLow := pendingFillOnLow
+// --- State 1: armed — รอราคาเบรคกรอบ (OCO บน/ล่าง) ---
+if barstate.isconfirmed and pendingState == 1 and posDir == 0
+    bool brkUp = high >= frameHigh
+    bool brkDn = low <= frameLow
+    if brkUp and brkDn
+        // แท่งเดียวกลืนทั้งกรอบ — ไม่รู้ว่าเบรคฝั่งไหนก่อน → ยกเลิกกรอบ
+        label.new(bar_index, close,
+             text="CANCEL FRAME (both sides broken)",
+             style=label.style_label_down, color=color.new(color.gray, 25),
+             textcolor=color.white, size=size.tiny)
+        if not na(pendingLineUp)
+            line.delete(pendingLineUp)
+        if not na(pendingLineDn)
+            line.delete(pendingLineDn)
+        if not na(pendingLabel)
+            label.delete(pendingLabel)
+        pendingLineUp := na
+        pendingLineDn := na
+        pendingLabel := na
+        pendingState := 0
+        pendingBrkDir := 0
+        pendingEntry := na
+        stateMoved := true
+    else if brkUp or brkDn
+        pendingBrkDir := brkUp ? 1 : -1
+        float brkLev = brkUp ? frameHigh : frameLow
+        float frRng  = frameHigh - frameLow
+        float pbDist = inpPullbackMode == "% of Range" ? frRng * (inpPullbackRangePct / 100.0) : brkLev * inpPullbackPct / 100.0
+        pendingEntry := brkUp ? frameHigh - pbDist : frameLow + pbDist
+        pendingFillOnLow := brkUp   // เบรคขึ้น → รอราคาถอยลงมาแตะ (fill on low)
+        pendingState := 2
+        stateMoved := true
+        int fillDir = inpReverseTrade ? -pendingBrkDir : pendingBrkDir
+        // visuals: ลบเส้นกรอบ 2 เส้น → เหลือเส้น pullback เส้นเดียว (fuchsia dotted)
+        if not na(pendingLineUp)
+            line.delete(pendingLineUp)
+        if not na(pendingLineDn)
+            line.delete(pendingLineDn)
+        pendingLineDn := na
+        pendingLineUp := line.new(bar_index, pendingEntry, bar_index + 20, pendingEntry,
+             color=color.fuchsia, style=line.style_dotted, width=2)
+        if not na(pendingLabel)
+            label.delete(pendingLabel)
+        pendingLabel := label.new(bar_index, pendingEntry,
+             text="Break " + (brkUp ? "▲ HH" : "▼ LL") + " (" + frameTag + ")\nรอ Pullback → " +
+                 (fillDir == 1 ? "BUY" : "SELL") + (inpReverseTrade ? " ⇄" : "") +
+                 " @ " + str.tostring(pendingEntry, format.mintick),
+             color=color.new(color.fuchsia, 25), textcolor=color.white,
+             style=brkUp ? label.style_label_down : label.style_label_up, size=size.small)
+        // marker วงกลมที่จุดเบรค
+        label.new(bar_index, brkLev, text="",
+             style=label.style_circle, color=color.new(brkUp ? color.blue : color.red, 50), size=size.normal)
 
-if fillSell
-    float fillPx2 = pendingFillOnLow ? math.min(open, pendingEntry) : math.max(open, pendingEntry)
-    float fillRisk2 = math.abs(fillPx2 - pendingSL)
-    [sLn2, tLn2] = f_drawEntry(-1, fillPx2, pendingSL, pendingTP, fillRisk2, pendingLot, pendingTag)
-    posDir := -1
-    entryPrice := fillPx2
-    slPrice := pendingSL
-    tpPrice := pendingTP
-    initRisk := fillRisk2
-    lotSize := pendingLot
-    tradeTime := time
-    tradeTag := pendingTag
-    slLine := sLn2
-    tpLine := tLn2
-    tradeBarIdx := bar_index
-    tradeFilledOnLow := pendingFillOnLow
+// --- State 2: เบรคแล้ว — รอราคาถอยกลับมาแตะ pullback level ---
+// (else-if กับ state 1 โดยปริยาย: แท่งที่เพิ่งเบรค stateMoved=true จะไม่เข้าบล็อกนี้)
+else if barstate.isconfirmed and pendingState == 2 and posDir == 0
+    bool pbHit = pendingFillOnLow ? low <= pendingEntry : high >= pendingEntry
+    if pbHit
+        int tradeDir = inpReverseTrade ? -pendingBrkDir : pendingBrkDir
+        // ราคา fill จริง: gap ข้าม level → fill ที่ open (ราคาที่ตลาดเทรดจริง)
+        float fillBase = pendingFillOnLow ? math.min(open, pendingEntry) : math.max(open, pendingEntry)
+        float ent  = tradeDir == 1 ? fillBase + inpSpreadPts : fillBase - inpSpreadPts
+        float oneR = f_oneR(frameHigh - frameLow)
+        float sl   = tradeDir == 1 ? ent - oneR : ent + oneR
+        float tp   = tradeDir == 1 ? ent + oneR * inpRRRatio : ent - oneR * inpRRRatio
+        float lot  = oneR > 0 ? inpRiskAmount / (oneR * inpPipValueRatio) : 0
+        string fillTag = frameTag + (pendingBrkDir == 1 ? " ▲" : " ▼") + (inpReverseTrade ? " ⇄" : "")
+        [sLnF, tLnF] = f_drawEntry(tradeDir, ent, sl, tp, math.abs(ent - sl), lot, fillTag)
+        posDir := tradeDir
+        entryPrice := ent
+        slPrice := sl
+        tpPrice := tp
+        initRisk := math.abs(ent - sl)
+        lotSize := lot
+        tradeTime := time
+        tradeTag := fillTag
+        slLine := sLnF
+        tpLine := tLnF
+        tradeBarIdx := bar_index
+        tradeFilledOnLow := pendingFillOnLow
+        // เคลียร์ pending/frame (กรอบนี้ใช้ไปแล้ว)
+        if not na(pendingLineUp)
+            line.delete(pendingLineUp)
+        if not na(pendingLabel)
+            label.delete(pendingLabel)
+        pendingLineUp := na
+        pendingLabel := na
+        pendingState := 0
+        pendingBrkDir := 0
+        pendingEntry := na
+        stateMoved := true
 
-// label แจ้งยกเลิก (expired / opposite signal / new swing สำหรับ breakout)
-if (pendExpired or pendOpposite or pendNewSwing) and not na(pendingEntry)
-    string cancelReason = pendExpired ? "expired" : pendNewSwing ? "new swing" : "opposite signal"
-    label.new(bar_index, pendingEntry,
-         text="CANCEL PENDING (" + cancelReason + ")",
-         style=pendingDir == 1 ? label.style_label_down : label.style_label_up,
-         color=color.new(color.gray, 25), textcolor=color.white, size=size.tiny)
-
-// เคลียร์ pending state (หลัง fill / expire / opposite / new swing)
-if fillBuy or fillSell or pendExpired or pendOpposite or pendNewSwing
-    if not na(pendingLine)
-        line.delete(pendingLine)
+// --- Expiry: นับจากแท่งที่กรอบ confirm (ทั้ง state 1 และ 2) ---
+if barstate.isconfirmed and pendingState != 0 and not stateMoved and inpPlanExpireBars > 0 and bar_index - frameCreateBar >= inpPlanExpireBars
+    label.new(bar_index, pendingState == 2 ? pendingEntry : close,
+         text="CANCEL FRAME (expired)",
+         style=label.style_label_down, color=color.new(color.gray, 25),
+         textcolor=color.white, size=size.tiny)
+    if not na(pendingLineUp)
+        line.delete(pendingLineUp)
+    if not na(pendingLineDn)
+        line.delete(pendingLineDn)
     if not na(pendingLabel)
         label.delete(pendingLabel)
-    pendingDir := 0
-    pendingEntry := na
-    pendingSL := na
-    pendingTP := na
-    pendingRisk := na
-    pendingLot := na
-    pendingCreateBar := na
-    pendingTag := ""
-    pendingFillOnLow := false
-    pendingIsBreakout := false
-    pendingPatDir := 0
-    pendingLine := na
+    pendingLineUp := na
+    pendingLineDn := na
     pendingLabel := na
+    pendingState := 0
+    pendingBrkDir := 0
+    pendingEntry := na
 
 // ==================================================================
 // === Exit check (SL/TP เท่านั้น) ===
@@ -743,110 +778,102 @@ if exitShortEvent
         isRecTrade := false
 
 // ==================================================================
-// === Entry: pending Pullback order เท่านั้น (ไม่มี market / breakout / dow แล้ว) ===
+// === New Frame (LL→HH / HH→LL confirm): ปิดของเก่าทั้งหมด → arm กรอบใหม่ ===
 // ==================================================================
-// --- BUY SIGNAL (LL→HH→HL pattern): normal = LONG, reverse = SHORT ---
-if barstate.isconfirmed and buySignal and posDir == 0 and pendingDir == 0
-    float patHH   = hhPrice          // HH ก่อนหน้า (จาก state)
-    float patLL   = llPrice          // LL ก่อนหน้า
-    float patHL   = newLowPrice      // HL ที่เพิ่ง confirm
-    float patRng  = patHH - patLL    // ระยะกว้าง — ใช้คำนวณ 1R
-    float pbRng   = patHH - patHL    // ระยะแคบ HH-HL — ใช้สำหรับ pullback %
-    float oneR    = f_oneR(patRng)
-    int    tradeDir = inpReverseTrade ? -1 : 1
-    string tagStr   = inpReverseTrade ? "LL→HH→HL ⇄" : "LL→HH→HL"
-    // Pullback level — dip ต่ำกว่า HL อีก X%
-    float pbLevel = inpPullbackMode == "% of Range" ? patHL - pbRng * (inpPullbackRangePct / 100.0) : patHL - patHL * inpPullbackPct / 100.0
-    // สร้าง pending เฉพาะเมื่อ pbLevel ยังไม่ถูกราคาผ่าน (ต่ำกว่า close)
-    if pbLevel < close
-        float ent = tradeDir == 1 ? pbLevel + inpSpreadPts : pbLevel - inpSpreadPts
-        float sl  = tradeDir == 1 ? ent - oneR : ent + oneR
-        float tp  = tradeDir == 1 ? ent + oneR * inpRRRatio : ent - oneR * inpRRRatio
-        float lot = oneR > 0 ? inpRiskAmount / (oneR * inpPipValueRatio) : 0
-        color   pcol   = tradeDir == 1 ? inpUpColor : inpDownColor
-        string  psstr  = tradeDir == 1 ? "BUY" : "SELL"
-        pendingDir       := tradeDir
-        pendingEntry     := ent
-        pendingSL        := sl
-        pendingTP        := tp
-        pendingRisk      := math.abs(ent - sl)
-        pendingLot       := lot
-        pendingCreateBar := bar_index
-        pendingTag       := tagStr
-        pendingFillOnLow := true
-        pendingIsBreakout := false
-        pendingPatDir    := 1
-        pendingLine := line.new(bar_index, ent, bar_index + 20, ent,
-             color=pcol, style=line.style_dashed, width=2)
-        pendingLabel := label.new(bar_index, ent,
-             text="PENDING " + psstr + " (" + tagStr + ")\nEntry: " + str.tostring(ent, format.mintick) +
-                 "\nSL: " + str.tostring(sl, format.mintick) +
-                 "\nTP: " + str.tostring(tp, format.mintick) +
-                 "\nLot: " + str.tostring(lot, "#.##"),
-             color=color.new(pcol, 30), textcolor=color.white,
-             style=tradeDir == 1 ? label.style_label_up : label.style_label_down, size=size.small)
-    else
-        // ราคา dip ต่ำกว่า pullback level ไปแล้ว → ทิ้ง signal (ไม่มี market fallback แล้ว)
-        label.new(bar_index, patHL,
-             text="✗ Pullback level passed",
-             style=label.style_label_down, color=color.new(color.gray, 30),
-             textcolor=color.white, size=size.tiny)
+bool newFrameEvent = barstate.isconfirmed and (frameBullSignal or frameBearSignal)
 
-// --- SELL SIGNAL (HH→LL→LH pattern): normal = SHORT, reverse = LONG ---
-if barstate.isconfirmed and sellSignal and posDir == 0 and pendingDir == 0
-    float patHH   = hhPrice
-    float patLL   = llPrice
-    float patLH   = newHighPrice     // LH ที่เพิ่ง confirm
-    float patRng  = patHH - patLL    // ระยะกว้าง — ใช้คำนวณ 1R
-    float pbRng   = patLH - patLL    // ระยะแคบ LH-LL — ใช้สำหรับ pullback %
-    float oneR    = f_oneR(patRng)
-    int    tradeDir = inpReverseTrade ? 1 : -1
-    string tagStr   = inpReverseTrade ? "HH→LL→LH ⇄" : "HH→LL→LH"
-    // Pullback level — bounce สูงกว่า LH อีก X%
-    float pbLevel = inpPullbackMode == "% of Range" ? patLH + pbRng * (inpPullbackRangePct / 100.0) : patLH + patLH * inpPullbackPct / 100.0
-    // สร้าง pending เฉพาะเมื่อ pbLevel ยังไม่ถูกราคาผ่าน (สูงกว่า close)
-    if pbLevel > close
-        float ent = tradeDir == 1 ? pbLevel + inpSpreadPts : pbLevel - inpSpreadPts
-        float sl  = tradeDir == 1 ? ent - oneR : ent + oneR
-        float tp  = tradeDir == 1 ? ent + oneR * inpRRRatio : ent - oneR * inpRRRatio
-        float lot = oneR > 0 ? inpRiskAmount / (oneR * inpPipValueRatio) : 0
-        color   pcol   = tradeDir == 1 ? inpUpColor : inpDownColor
-        string  psstr  = tradeDir == 1 ? "BUY" : "SELL"
-        pendingDir       := tradeDir
-        pendingEntry     := ent
-        pendingSL        := sl
-        pendingTP        := tp
-        pendingRisk      := math.abs(ent - sl)
-        pendingLot       := lot
-        pendingCreateBar := bar_index
-        pendingTag       := tagStr
-        pendingFillOnLow := false
-        pendingIsBreakout := false
-        pendingPatDir    := -1
-        pendingLine := line.new(bar_index, ent, bar_index + 20, ent,
-             color=pcol, style=line.style_dashed, width=2)
-        pendingLabel := label.new(bar_index, ent,
-             text="PENDING " + psstr + " (" + tagStr + ")\nEntry: " + str.tostring(ent, format.mintick) +
-                 "\nSL: " + str.tostring(sl, format.mintick) +
-                 "\nTP: " + str.tostring(tp, format.mintick) +
-                 "\nLot: " + str.tostring(lot, "#.##"),
-             color=color.new(pcol, 30), textcolor=color.white,
-             style=tradeDir == 1 ? label.style_label_up : label.style_label_down, size=size.small)
-    else
-        // ราคาเด้งเลย pullback level ไปแล้ว → ทิ้ง signal
-        label.new(bar_index, patLH,
-             text="✗ Pullback level passed",
-             style=label.style_label_up, color=color.new(color.gray, 30),
-             textcolor=color.white, size=size.tiny)
+// --- 1) ปิด position ที่เปิดอยู่ (ที่ราคา close ของแท่ง confirm) ---
+// SL/TP intra-bar ของแท่งนี้ถูกเช็คไปก่อนแล้ว (exit block ด้านบน) — ถ้ายังรอด มาปิดที่นี่
+if newFrameEvent and posDir != 0
+    float exitPxF = close
+    float pnlF = posDir == 1 ? exitPxF - entryPrice : entryPrice - exitPxF
+    float actualRF = initRisk > 0 ? pnlF / initRisk : 0.0
+    f_recordResult(pnlF, initRisk, tradeTime, tradeTag)
+    color closeColF = actualRF > 0 ? color.green : actualRF == 0 ? color.gray : color.red
+    // ไม่มีฝั่งไหน hit → เส้น SL/TP จางทั้งคู่
+    if not na(slLine)
+        line.set_color(slLine, color.new(color.red, 70))
+    if not na(tpLine)
+        line.set_color(tpLine, color.new(color.green, 70))
+    if inpShowExitLines
+        label.new(bar_index, exitPxF, text="",
+             style=label.style_circle, color=color.new(closeColF, 50), size=size.normal)
+        string rSignF = actualRF >= 0 ? "+" : ""
+        label.new(bar_index, exitPxF,
+             text=rSignF + str.tostring(actualRF, "#.##") + "R",
+             style=posDir == 1 ? label.style_label_down : label.style_label_up,
+             color=color.new(color.black, 65), textcolor=closeColF, size=size.small,
+             tooltip="EXIT (New Frame)\nEntry: " + str.tostring(entryPrice, format.mintick) +
+                 "\nExit: " + str.tostring(exitPxF, format.mintick) +
+                 "\nR: " + rSignF + str.tostring(actualRF, "#.##"))
+        line.new(bar_index - 3, exitPxF, bar_index + 3, exitPxF,
+             color=closeColF, width=2)
+        if inpShowTradePath and not na(tradeBarIdx)
+            line.new(tradeBarIdx, entryPrice, bar_index, exitPxF,
+                 color=color.new(closeColF, 60), width=1, style=line.style_dashed)
+    posDir := 0
+    entryPrice := na
+    slPrice := na
+    tpPrice := na
+    initRisk := na
+    lotSize := na
+    slLine := na
+    tpLine := na
+    tradeBarIdx := na
+    isRecTrade := false
 
-// --- ยืดเส้น SL/TP ตามแท่งขณะถือสถานะ + ยืดเส้น pending ---
+// --- 2) ยกเลิก pending / กรอบเก่า (ถ้ามี) ---
+if newFrameEvent and pendingState != 0
+    label.new(bar_index, pendingState == 2 and not na(pendingEntry) ? pendingEntry : close,
+         text="CANCEL FRAME (new frame)",
+         style=label.style_label_down, color=color.new(color.gray, 25),
+         textcolor=color.white, size=size.tiny)
+    if not na(pendingLineUp)
+        line.delete(pendingLineUp)
+    if not na(pendingLineDn)
+        line.delete(pendingLineDn)
+    if not na(pendingLabel)
+        label.delete(pendingLabel)
+    pendingLineUp := na
+    pendingLineDn := na
+    pendingLabel := na
+    pendingState := 0
+    pendingBrkDir := 0
+    pendingEntry := na
+
+// --- 3) Arm กรอบใหม่: เส้นขอบบน (HH) + ขอบล่าง (LL) รอเบรค ---
+// state update ด้านบนรันแล้ว → hhPrice/llPrice เป็นค่าของกรอบนี้พอดีทั้ง bull และ bear
+if newFrameEvent
+    frameHigh := hhPrice
+    frameLow  := llPrice
+    frameTag  := frameBullSignal ? "LL→HH" : "HH→LL"
+    frameCreateBar := bar_index
+    pendingState := 1
+    pendingBrkDir := 0
+    pendingEntry := na
+    pendingFillOnLow := false
+    color fcol = frameBullSignal ? inpUpColor : inpDownColor
+    pendingLineUp := line.new(bar_index, frameHigh, bar_index + 20, frameHigh,
+         color=color.new(color.blue, 15), style=line.style_dashed, width=2)
+    pendingLineDn := line.new(bar_index, frameLow, bar_index + 20, frameLow,
+         color=color.new(color.red, 15), style=line.style_dashed, width=2)
+    pendingLabel := label.new(bar_index, frameHigh,
+         text="FRAME " + frameTag + " armed\n▲ Break " + str.tostring(frameHigh, format.mintick) + " → " + (inpReverseTrade ? "SELL ⇄" : "BUY") +
+             "\n▼ Break " + str.tostring(frameLow, format.mintick) + " → " + (inpReverseTrade ? "BUY ⇄" : "SELL"),
+         color=color.new(fcol, 30), textcolor=color.white,
+         style=label.style_label_down, size=size.small)
+
+// --- ยืดเส้น SL/TP ตามแท่งขณะถือสถานะ + ยืดเส้นกรอบ/pending ---
 if posDir != 0
     if not na(slLine)
         line.set_x2(slLine, bar_index)
     if not na(tpLine)
         line.set_x2(tpLine, bar_index)
-if pendingDir != 0 and not na(pendingLine)
-    line.set_x2(pendingLine, bar_index + 3)
+if pendingState != 0
+    if not na(pendingLineUp)
+        line.set_x2(pendingLineUp, bar_index + 3)
+    if not na(pendingLineDn)
+        line.set_x2(pendingLineDn, bar_index + 3)
 
 // === Info Panel (Table) ===
 if inpShowPanel and barstate.islast and hCount >= 2 and lCount >= 2
@@ -873,11 +900,11 @@ if inpShowPanel and barstate.islast and hCount >= 2 and lCount >= 2
     table.cell(panel, 1, 4, str.tostring(prevLow2, format.mintick), text_color=color.gray, text_size=size.small, text_halign=text.align_left)
 
     table.cell(panel, 0, 5, "Strategy", text_color=color.aqua, text_size=size.small, text_halign=text.align_left)
-    table.cell(panel, 1, 5, inpEnableEntry ? "Dow Confirmation (LL→HH→HL / HH→LL→LH)" + (inpReverseTrade ? "  ⇄ REVERSE" : "") : "OFF", text_color=inpReverseTrade ? color.orange : color.aqua, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 1, 5, inpEnableEntry ? "Frame Break + Pullback (LL→HH / HH→LL)" + (inpReverseTrade ? "  ⇄ REVERSE" : "") : "OFF", text_color=inpReverseTrade ? color.orange : color.aqua, text_size=size.small, text_halign=text.align_left)
 
     string oneRLabel = inpOneRBasis == ONER_DIST ? "Distance " + str.tostring(inpOneRDistFix) : inpOneRBasis == ONER_ATR ? "ATR×" + str.tostring(inpOneRAtrMult) : "SL% " + str.tostring(inpOneRPctVal, "#.#") + "%"
     table.cell(panel, 0, 6, "Entry / 1R", text_color=color.aqua, text_size=size.small, text_halign=text.align_left)
-    table.cell(panel, 1, 6, "Pullback  ·  1R: " + oneRLabel + "  ·  RR 1:" + str.tostring(inpRRRatio, "#.#"), text_color=color.aqua, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 1, 6, "Break+PB  ·  1R: " + oneRLabel + "  ·  RR 1:" + str.tostring(inpRRRatio, "#.#"), text_color=color.aqua, text_size=size.small, text_halign=text.align_left)
 
     posText  = posDir == 1 ? "LONG @ " + str.tostring(entryPrice, format.mintick) : posDir == -1 ? "SHORT @ " + str.tostring(entryPrice, format.mintick) : "FLAT"
     posColor = posDir == 1 ? inpUpColor : posDir == -1 ? inpDownColor : color.gray
@@ -1036,8 +1063,8 @@ if showStatsTable and barstate.islast
         periodStr := "Last " + str.tostring(statMonths) + " Months"
     else if statMode == "3. เจาะจงเดือนและปี (Specific Month)"
         periodStr := statTargetM + " " + str.tostring(actualTargetY)
-    string stratShort = inpEnableEntry ? (inpReverseTrade ? "Dow Confirmation ⇄" : "Dow Confirmation") : "OFF"
-    string tpModeStr  = "Pullback  ·  RR 1:" + str.tostring(inpRRRatio, "#.#") + (inpReverseTrade ? "  ·  ⇄" : "")
+    string stratShort = inpEnableEntry ? (inpReverseTrade ? "Frame Break+PB ⇄" : "Frame Break+PB") : "OFF"
+    string tpModeStr  = "Break+PB  ·  RR 1:" + str.tostring(inpRRRatio, "#.#") + (inpReverseTrade ? "  ·  ⇄" : "")
     table.cell(statsTable, 0, 0,  "◆  DOW THEORY PERFORMANCE", text_color=lxTitleTx, text_size=size.small, bgcolor=lxHeadBg)
     table.cell(statsTable, 0, 1,  periodStr + "  ·  " + syminfo.ticker + " " + timeframe.period, text_color=lxMuted, text_size=size.tiny, bgcolor=lxSubBg)
     table.cell(statsTable, 0, 2,  "Strategy",   text_color=lxMuted, text_size=size.tiny,  bgcolor=lxRowA, text_halign=text.align_left)
@@ -1324,8 +1351,8 @@ alertcondition(trendState == "UPTREND - HH + HL", title="Uptrend Detected", mess
 alertcondition(trendState == "DOWNTREND - LL + LH", title="Downtrend Detected", message="Dow Theory: DOWNTREND - LL + LH detected")
 alertcondition(trendState == "SIDEWAY / CORRECTION", title="Sideway Detected", message="Dow Theory: SIDEWAY / CORRECTION detected")
 
-alertcondition(buySignal,  title="Dow Confirmation Buy",  message="Dow Theory Confirmation: LL -> HH -> HL confirmed - BUY")
-alertcondition(sellSignal, title="Dow Confirmation Sell", message="Dow Theory Confirmation: HH -> LL -> LH confirmed - SELL")
+alertcondition(frameBullSignal, title="Frame LL→HH Armed", message="Dow Frame: LL -> HH confirmed - armed (break HH = BUY / break LL = SELL)")
+alertcondition(frameBearSignal, title="Frame HH→LL Armed", message="Dow Frame: HH -> LL confirmed - armed (break HH = BUY / break LL = SELL)")
 
 alertcondition(exitLongEvent,  title="Exit Long",     message="Dow Theory: EXIT LONG (SL/TP hit)")
 alertcondition(exitShortEvent, title="Exit Short",    message="Dow Theory: EXIT SHORT (SL/TP hit)")
