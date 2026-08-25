@@ -46,13 +46,10 @@ inpEntryMode        = input.string(ENTRY_MODE_MARKET, "Entry Mode",
 inpPullbackMode     = input.string("% of Range", "Pullback Mode (Mode 2)",
      options=["% of Price", "% of Range"], group="Entry Mode")
 inpPullbackPct      = input.float(0.4, " [% of Price] Pullback %", step=0.05, group="Entry Mode",
-     tooltip="ใช้เมื่อ Pullback Mode = % of Price — pullback = entry × X%")
+     tooltip="ใช้เมื่อ Pullback Mode = % of Price\n • BUY: pullback level = HL - HL × X% (dip ต่ำกว่า HL อีก X% ของราคา HL)\n • SELL: pullback level = LH + LH × X% (bounce สูงกว่า LH อีก X% ของราคา LH)")
 inpPullbackRangePct = input.float(30, " [% of Range] Pullback %",
      minval=1, maxval=100, step=5, group="Entry Mode",
-     tooltip="ใช้เมื่อ Pullback Mode = % of Range\n • BUY: pullback level = HH - (HH-HL) × X%  (range แคบตาม HH-HL)\n • SELL: pullback level = LL + (LH-LL) × X%  (range แคบตาม LH-LL)")
-inpPlanExpireBars   = input.int(50, "Pending Order Expiry (bars, 0 = no expiry)",
-     minval=0, group="Entry Mode",
-     tooltip="ถ้าราคาไม่ถอยลงมาถึง pullback level ภายใน N แท่ง → ยกเลิก pending")
+     tooltip="ใช้เมื่อ Pullback Mode = % of Range\n • BUY: pullback level = HL - (HH-HL) × X% (dip ต่ำกว่า HL อีก X% ของช่วง HH-HL)\n • SELL: pullback level = LH + (LH-LL) × X% (bounce สูงกว่า LH อีก X% ของช่วง LH-LL)\n\nหมายเหตุ: HL/LH เพิ่ง confirm (เป็นก้นของ pullback / ยอดของ retracement แล้ว)\nPullback mode นี้จึงรอ dip/bounce ที่ลึก/สูงกว่านั้นอีก — ถ้าราคาไปถึงหมายความว่า pattern เริ่มเสี่ยงเสีย")
 inpReverseTrade     = input.bool(false, "Reverse Trade (fade the pattern)",
      group="Entry Mode",
      tooltip="เปิด = พลิกทิศเทรด (bet ว่า pattern เป็นสัญญาณหลอก)\n • LL→HH→HL detected → SELL แทน BUY (SL วางที่ HH ขอบบนของกรอบ)\n • HH→LL→LH detected → BUY แทน SELL (SL วางที่ LL ขอบล่างของกรอบ)\n\nเหมาะกับกรณีที่มองว่า pattern น่าจะเป็น false-breakout (เช่นใน sideways market)\n\nหมายเหตุ: Dow Breakout (Mode 4) จะบังคับทิศตาม pattern เสมอ (reverse ไม่มีผล)")
@@ -803,9 +800,11 @@ if barstate.isconfirmed and buySignal and posDir == 0 and pendingDir == 0
     float oneR    = f_oneR(patRng)
     int    tradeDir = inpReverseTrade ? -1 : 1
     string tagStr   = inpReverseTrade ? "LL→HH→HL ⇄" : "LL→HH→HL"
-    // Pullback level (Mode 2) — คำนวณจาก HH-HL range (แคบกว่า HH-LL)
-    // ราคาย่อจาก HH ลงมา X% ของช่วง HH-HL แล้วรอ fill
-    float pbLevel = inpPullbackMode == "% of Range" ? patHH - pbRng * (inpPullbackRangePct / 100.0) : patHH - patHH * inpPullbackPct / 100.0
+    // Pullback level (Mode 2) — dip ต่ำกว่า HL (pullback ที่ลึกขึ้น หลัง HL confirm แล้ว)
+    // BUY: pbLevel = HL - (HH-HL) × X%  (X% ของ HH-HL ต่ำกว่า HL)
+    //      หรือ HL - HL × X% (Mode "% of Price")
+    // ราคาต้อง dip ลงมาถึง level นี้ จึงจะ fill (ถ้าไม่ถึง = pattern ยังไม่ให้เข้า)
+    float pbLevel = inpPullbackMode == "% of Range" ? patHL - pbRng * (inpPullbackRangePct / 100.0) : patHL - patHL * inpPullbackPct / 100.0
     // Pending รอได้ก็ต่อเมื่อ level อยู่ "ต่ำกว่า" ราคาปัจจุบันเท่านั้น
     // ถ้าราคาถอยผ่าน level มาแล้ว -> เข้า market ที่ close ทันที (fill จริงบนแท่งนี้)
     // กันบัค "ออเดอร์ผี" ที่ fill ณ ราคาที่ตลาดผ่านไปแล้ว
@@ -943,9 +942,11 @@ if barstate.isconfirmed and sellSignal and posDir == 0 and pendingDir == 0
     float oneR    = f_oneR(patRng)
     int    tradeDir = inpReverseTrade ? 1 : -1
     string tagStr   = inpReverseTrade ? "HH→LL→LH ⇄" : "HH→LL→LH"
-    // Pullback level (Mode 2) — คำนวณจาก LH-LL range (แคบกว่า HH-LL)
-    // ราคาเด้งจาก LL ขึ้นไป X% ของช่วง LH-LL แล้วรอ fill
-    float pbLevel = inpPullbackMode == "% of Range" ? patLL + pbRng * (inpPullbackRangePct / 100.0) : patLL + patLL * inpPullbackPct / 100.0
+    // Pullback level (Mode 2) — bounce สูงกว่า LH (retracement ที่สูงขึ้น หลัง LH confirm แล้ว)
+    // SELL: pbLevel = LH + (LH-LL) × X%  (X% ของ LH-LL สูงกว่า LH)
+    //       หรือ LH + LH × X% (Mode "% of Price")
+    // ราคาต้องเด้งขึ้นถึง level นี้ จึงจะ fill (ถ้าไม่ถึง = pattern ยังไม่ให้เข้า)
+    float pbLevel = inpPullbackMode == "% of Range" ? patLH + pbRng * (inpPullbackRangePct / 100.0) : patLH + patLH * inpPullbackPct / 100.0
     // Pending รอได้ก็ต่อเมื่อ level อยู่ "สูงกว่า" ราคาปัจจุบันเท่านั้น
     bool waitPullback = inpEntryMode == ENTRY_MODE_PULLBACK and pbLevel > close
     // Breakout: รอราคาเบรคต่ำกว่า LL (close ยังสูงกว่า LL -> สร้าง pending)
