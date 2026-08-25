@@ -12,7 +12,7 @@
   - Trendline drawing (Uptrend/Downtrend)
   - HH/HL/LH/LL labels
   - Info panel + Alert conditions
-  - Entry: Swing Reversal (strict-adjacency) — LL แล้วต่อด้วย HH (ห้ามมี LH/HL คั่น) → Buy เมื่อ HH confirm, HH แล้วต่อด้วย LL (ห้ามมี LH/HL คั่น) → Sell เมื่อ LL confirm; track ผ่าน lastSwingType ตัวเดียว ทุก swing ที่มาแทรกจะยกเลิก pattern อัตโนมัติ
+  - Entry: Dow Theory Confirmation (strict-adjacency 3-swing) — LL → HH → HL confirm → Buy (ห้ามมี LH คั่น), HH → LL → LH confirm → Sell (ห้ามมี HL คั่น); track ผ่าน `prevSwingType` + `lastSwingType` shift 2 slot ทุกครั้งที่มี swing ใหม่, ทุก swing ที่แทรกจะยกเลิก pattern อัตโนมัติ; SL Edge Mode วางที่ HL (BUY) / LH (SELL) จุด confirm ล่าสุด — ตึงสุด; pattern range สำหรับ 1R ยังใช้ HH-LL เดิม (กว้าง); pullback % (Mode `% of Range`) ใช้ range แคบ HH-HL (BUY) / LH-LL (SELL); breakout ยังเบรค HH (BUY) / LL (SELL) ขอบเดิม
   - จุดเข้าออเดอร์แบบ V10.1: วงกลมใหญ่โปร่ง (เขียว/แดง) + label ดำแสดง Entry/SL/TP + R:R, ลูกศรจาก entry → SL (แดง) และ entry → TP (เขียว), เส้นแนวนอนสั้น 6 แท่งที่ Entry/SL/TP + ป้ายราคา
   - กรอบ Pattern: วาดกล่องครอบช่วง LL→HH (เขียว) หรือ HH→LL (แดง) เพื่อให้เห็น pattern ชัดเจน (toggle ได้)
   - Entry Mode สไตล์ V10.1: (1) Market — เข้าที่ close ของแท่ง confirm ทันที; (2) Pullback — สร้าง pending order ที่ระดับ pullback (`% of Price` หรือ `% of Range` ของ HH↔LL) รอราคาถอยแตะจึง fill, มี expiry เป็นจำนวนแท่ง, ยกเลิก pending ทันทีถ้าสัญญาณตรงข้ามยิงตามมา; (3) Breakout — สร้าง pending order ที่ระดับ HH (ขาขึ้น) หรือ LL (ขาลง) รอราคาเบรคผ่านจึง fill, ยกเลิกทันทีถ้ามี swing ใหม่ (HH/HL/LH/LL) ปรากฏก่อนเบรค, ใช้ expiry เดียวกับ Pullback
