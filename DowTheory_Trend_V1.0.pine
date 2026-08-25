@@ -55,6 +55,14 @@ inpReverseTrade     = input.bool(false, "Reverse Trade (fade the pattern)",
      group="Entry Mode",
      tooltip="เปิด = พลิกทิศเทรด (bet ว่า pattern เป็นสัญญาณหลอก)\n • LL→HH detected → SELL แทน BUY (SL วางเหนือ HH)\n • HH→LL detected → BUY แทน SELL (SL วางใต้ LL)\n\nเหมาะกับกรณีที่มองว่า pattern น่าจะเป็น false-breakout (เช่นใน sideways market)")
 
+// --- Recovery Mode (Normal) ---
+inpUseRecovery  = input.bool(false, "Enable Recovery", group="Recovery Mode",
+     tooltip="เมื่อเทรดหลักแพ้ (SL hit) → เปิด Recovery trade อัตโนมัติทันที\nEntry = ราคา SL ของเทรดเดิม, 1R สืบทอดจากเทรดเดิม\nRecovery ได้ 1 ครั้งต่อ 1 เทรดหลัก (ไม่ recover ซ้อน)")
+inpRecDir       = input.string("Reverse", "Recovery Direction", options=["Same", "Reverse"], group="Recovery Mode",
+     tooltip="Same = เข้าทิศเดียวกับเทรดเดิม (เชื่อว่าจะกลับมา)\nReverse = เข้าสวนทิศเดิม (เชื่อว่าจะไปต่อ)")
+inpRecRRRatio   = input.float(1.5, "Recovery R:R", minval=0.1, step=0.1, group="Recovery Mode",
+     tooltip="R:R ratio สำหรับ TP ของ Recovery trade")
+
 // --- Risk Management (V10.1 style) ---
 ONER_SL_PCT  = "SL%"
 ONER_DIST    = "Distance"
@@ -388,6 +396,7 @@ var string tradeTag   = ""
 var line   slLine     = na
 var line   tpLine     = na
 var int    tradeBarIdx = na   // bar_index ตอนเปิดออเดอร์ (สำหรับวาด trade path line)
+var bool   isRecTrade  = false // true = เทรดปัจจุบันเป็น Recovery (ห้าม recover ซ้อน)
 
 // --- Pending order state (สำหรับ Pullback mode) ---
 var int    pendingDir        = 0     // 0/1/-1 (ทิศทางที่จะเทรดจริง หลัง apply reverse)
@@ -495,19 +504,34 @@ if barstate.isconfirmed and posDir == -1
         exitByTP := true
         exitReason := "TP hit"
 
-// --- Execute exit: V10.1 visuals (result-colored circle + R label + trade path + short line) ---
+// --- Execute exit: V10.1 visuals + SL/TP line style change + Recovery ---
 if exitLongEvent
     exitPx = exitBySL ? math.min(open, slPrice) : math.max(open, tpPrice)
     float pnlDistL = exitPx - entryPrice
     float actualRL = initRisk > 0 ? pnlDistL / initRisk : 0.0
     f_recordResult(pnlDistL, initRisk, tradeTime, tradeTag)
     color closeColL = actualRL > 0 ? color.green : actualRL == 0 ? color.gray : color.red
+    // SL/TP extending lines: hit side → solid/dark, other side → faded
+    if exitByTP
+        if not na(tpLine)
+            line.set_style(tpLine, line.style_solid)
+            line.set_color(tpLine, color.green)
+            line.set_width(tpLine, 2)
+        if not na(slLine)
+            line.set_color(slLine, color.new(color.red, 70))
+    else
+        if not na(slLine)
+            line.set_style(slLine, line.style_solid)
+            line.set_color(slLine, color.red)
+            line.set_width(slLine, 2)
+        if not na(tpLine)
+            line.set_color(tpLine, color.new(color.green, 70))
     if inpShowExitLines
         label.new(bar_index, exitPx, text="",
              style=label.style_circle, color=color.new(closeColL, 50), size=size.normal)
         string rSignL = actualRL >= 0 ? "+" : ""
         label.new(bar_index, exitPx,
-             text=exitReason + "\n" + rSignL + str.tostring(actualRL, "#.##") + "R",
+             text=rSignL + str.tostring(actualRL, "#.##") + "R",
              style=label.style_label_down, color=color.new(color.black, 65),
              textcolor=closeColL, size=size.small,
              tooltip="EXIT LONG\n" + exitReason +
@@ -519,15 +543,40 @@ if exitLongEvent
         if inpShowTradePath and not na(tradeBarIdx)
             line.new(tradeBarIdx, entryPrice, bar_index, exitPx,
                  color=color.new(closeColL, 60), width=1, style=line.style_dashed)
-    posDir := 0
-    entryPrice := na
-    slPrice := na
-    tpPrice := na
-    initRisk := na
-    lotSize := na
-    slLine := na
-    tpLine := na
-    tradeBarIdx := na
+    // Recovery: main trade แพ้ → เปิด recovery ทันที (1 ครั้งต่อ main)
+    bool willRecL = inpUseRecovery and exitBySL and not isRecTrade
+    if willRecL
+        int recDirL = inpRecDir == "Same" ? 1 : -1
+        float rEntL = recDirL == 1 ? slPrice + inpSpreadPts : slPrice - inpSpreadPts
+        float rOneRL = initRisk
+        float rSlL = recDirL == 1 ? rEntL - rOneRL : rEntL + rOneRL
+        float rTpL = recDirL == 1 ? rEntL + rOneRL * inpRecRRRatio : rEntL - rOneRL * inpRecRRRatio
+        float rLotL = rOneRL > 0 ? inpRiskAmount / (rOneRL * inpPipValueRatio) : 0
+        string rTagL = tradeTag + " Reco"
+        [rsLnL, rtLnL] = f_drawEntry(recDirL, rEntL, rSlL, rTpL, math.abs(rEntL - rSlL), rLotL, rTagL)
+        posDir := recDirL
+        entryPrice := rEntL
+        slPrice := rSlL
+        tpPrice := rTpL
+        initRisk := math.abs(rEntL - rSlL)
+        lotSize := rLotL
+        tradeTime := time
+        tradeTag := rTagL
+        slLine := rsLnL
+        tpLine := rtLnL
+        tradeBarIdx := bar_index
+        isRecTrade := true
+    else
+        posDir := 0
+        entryPrice := na
+        slPrice := na
+        tpPrice := na
+        initRisk := na
+        lotSize := na
+        slLine := na
+        tpLine := na
+        tradeBarIdx := na
+        isRecTrade := false
 
 if exitShortEvent
     exitPx = exitBySL ? math.max(open, slPrice) : math.min(open, tpPrice)
@@ -535,12 +584,26 @@ if exitShortEvent
     float actualRS = initRisk > 0 ? pnlDistS / initRisk : 0.0
     f_recordResult(pnlDistS, initRisk, tradeTime, tradeTag)
     color closeColS = actualRS > 0 ? color.green : actualRS == 0 ? color.gray : color.red
+    if exitByTP
+        if not na(tpLine)
+            line.set_style(tpLine, line.style_solid)
+            line.set_color(tpLine, color.green)
+            line.set_width(tpLine, 2)
+        if not na(slLine)
+            line.set_color(slLine, color.new(color.red, 70))
+    else
+        if not na(slLine)
+            line.set_style(slLine, line.style_solid)
+            line.set_color(slLine, color.red)
+            line.set_width(slLine, 2)
+        if not na(tpLine)
+            line.set_color(tpLine, color.new(color.green, 70))
     if inpShowExitLines
         label.new(bar_index, exitPx, text="",
              style=label.style_circle, color=color.new(closeColS, 50), size=size.normal)
         string rSignS = actualRS >= 0 ? "+" : ""
         label.new(bar_index, exitPx,
-             text=exitReason + "\n" + rSignS + str.tostring(actualRS, "#.##") + "R",
+             text=rSignS + str.tostring(actualRS, "#.##") + "R",
              style=label.style_label_up, color=color.new(color.black, 65),
              textcolor=closeColS, size=size.small,
              tooltip="EXIT SHORT\n" + exitReason +
@@ -552,15 +615,39 @@ if exitShortEvent
         if inpShowTradePath and not na(tradeBarIdx)
             line.new(tradeBarIdx, entryPrice, bar_index, exitPx,
                  color=color.new(closeColS, 60), width=1, style=line.style_dashed)
-    posDir := 0
-    entryPrice := na
-    slPrice := na
-    tpPrice := na
-    initRisk := na
-    lotSize := na
-    slLine := na
-    tpLine := na
-    tradeBarIdx := na
+    bool willRecS = inpUseRecovery and exitBySL and not isRecTrade
+    if willRecS
+        int recDirS = inpRecDir == "Same" ? -1 : 1
+        float rEntS = recDirS == 1 ? slPrice + inpSpreadPts : slPrice - inpSpreadPts
+        float rOneRS = initRisk
+        float rSlS = recDirS == 1 ? rEntS - rOneRS : rEntS + rOneRS
+        float rTpS = recDirS == 1 ? rEntS + rOneRS * inpRecRRRatio : rEntS - rOneRS * inpRecRRRatio
+        float rLotS = rOneRS > 0 ? inpRiskAmount / (rOneRS * inpPipValueRatio) : 0
+        string rTagS = tradeTag + " Reco"
+        [rsLnS, rtLnS] = f_drawEntry(recDirS, rEntS, rSlS, rTpS, math.abs(rEntS - rSlS), rLotS, rTagS)
+        posDir := recDirS
+        entryPrice := rEntS
+        slPrice := rSlS
+        tpPrice := rTpS
+        initRisk := math.abs(rEntS - rSlS)
+        lotSize := rLotS
+        tradeTime := time
+        tradeTag := rTagS
+        slLine := rsLnS
+        tpLine := rtLnS
+        tradeBarIdx := bar_index
+        isRecTrade := true
+    else
+        posDir := 0
+        entryPrice := na
+        slPrice := na
+        tpPrice := na
+        initRisk := na
+        lotSize := na
+        slLine := na
+        tpLine := na
+        tradeBarIdx := na
+        isRecTrade := false
 
 // ==================================================================
 // === Pending order fill / expire / cancel ===
