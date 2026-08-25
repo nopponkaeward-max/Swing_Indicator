@@ -67,6 +67,9 @@ inpDowSLMode = input.string(DOW_SL_PIVOT, "Dow Breakout SL Position",
 inpDowSLPct = input.float(100, " [% Range] SL Position (% of HH-HL from HH / LH-LL from LL)",
      minval=10, maxval=200, step=5, group="Entry Mode",
      tooltip="ใช้เมื่อ Dow Breakout SL = % of Range\n • BUY: SL = HH - (HH-HL) × X%   → 100 = HL ตรง, >100 = ต่ำกว่า HL (buffer), <100 = ระหว่าง HH-HL\n • SELL: SL = LL + (LH-LL) × X%  → 100 = LH ตรง, >100 = สูงกว่า LH (buffer)")
+inpDowSelfR = input.bool(false, " ↳ Dow Breakout: 1R = Actual SL Distance",
+     group="Entry Mode",
+     tooltip="ใช้เมื่อ Entry Mode = 4. Dow Breakout\n\nเปิด: oneR = |entry - Dow SL| จริง (entry = HH สำหรับ BUY / LL สำหรับ SELL)\n  • TP distance = SL distance × R:R (ตรงตาม R:R ที่ตั้ง)\n  • Lot ปรับให้ risk = Risk per 1R ($) พอดี\n\nปิด (default): TP/lot ใช้ 1R จาก 1R Basis (SL%/Distance/ATR) → RR ที่ได้จริงเบี้ยว")
 
 // --- Recovery Mode (Normal) ---
 inpUseRecovery  = input.bool(false, "Enable Recovery", group="Recovery Mode",
@@ -98,7 +101,10 @@ inpOneRAtrMult   = input.float(1.5, " [ATR] Multiplier",
      tooltip="1R = ATR(period) × Multiplier")
 inpSlEdgeMode    = input.bool(false, "SL at Pattern Edge (override)",
      group="Risk Management",
-     tooltip="เปิด = SL วางที่ขอบ pattern (LL สำหรับ Buy, HH สำหรับ Sell) เสมอ\n1R ด้านบนยังใช้เป็นหน่วยคำนวณ TP และ R accounting\nlot ยึด 1R เสมอ → ถ้า SL ห่างกว่า 1R จะขาดทุนเป็นทวีคูณ")
+     tooltip="เปิด = SL วางที่ขอบ pattern (HL สำหรับ BUY, LH สำหรับ SELL) เสมอ\nโดย default 1R (สำหรับ TP และ lot) ยังใช้จาก 1R Basis → RR ที่ตั้งอาจไม่ตรงกับระยะจริง (SL Edge อาจใกล้กว่า 1R มาก)\nเปิด toggle ด้านล่างเพื่อให้ 1R = ระยะ entry-SL จริง")
+inpSlEdgeSelfR   = input.bool(false, " ↳ SL Edge: 1R = Actual SL Distance",
+     group="Risk Management",
+     tooltip="ใช้เมื่อ SL Edge Mode = ON (Modes 1-3)\n\nเปิด: oneR = |entry - SL edge| จริง\n  • TP distance = SL distance × R:R (ตรงตาม R:R ที่ตั้ง)\n  • Lot ปรับให้ risk = Risk per 1R ($) พอดี\n  • R accounting ตรงกับ RR ที่ตั้ง 1:1\n\nปิด (default): TP/lot ใช้ 1R จาก 1R Basis (SL%/Distance/ATR)\n  → RR ที่ได้จริงเบี้ยว\n\nไม่กระทบเมื่อ SL Edge Mode = OFF (SL อยู่ที่ ent±oneR อยู่แล้ว)")
 inpRiskAmount    = input.float(500.0, "Risk per 1R ($)",
      minval=0.01, group="Risk Management",
      tooltip="เงินที่ยอมเสียต่อ 1R — lot ถูก size ให้ hit 1R = ขาดทุนเท่านี้")
@@ -814,8 +820,10 @@ if barstate.isconfirmed and buySignal and posDir == 0 and pendingDir == 0
         string dowTag = "LL→HH→HL ⤴"
         float dowSL = inpDowSLMode == DOW_SL_PIVOT ? patHL : patHH - (patHH - patHL) * (inpDowSLPct / 100.0)
         float ent = patHH + inpSpreadPts
-        float tp = ent + oneR * inpRRRatio
-        float lot = oneR > 0 ? inpRiskAmount / (oneR * inpPipValueRatio) : 0
+        // effOneR: ถ้าเปิด inpDowSelfR → ใช้ระยะ entry-SL จริง (RR ตรง 1:1)
+        float effOneR = inpDowSelfR ? math.abs(ent - dowSL) : oneR
+        float tp = ent + effOneR * inpRRRatio
+        float lot = effOneR > 0 ? inpRiskAmount / (effOneR * inpPipValueRatio) : 0
         pendingDir        := 1
         pendingEntry      := ent
         pendingSL         := dowSL
@@ -846,8 +854,10 @@ if barstate.isconfirmed and buySignal and posDir == 0 and pendingDir == 0
         float ent = tradeDir == 1 ? pbLevel + inpSpreadPts : pbLevel - inpSpreadPts
         // SL Edge Mode: LONG (normal) วางที่ HL (ตึงสุด), SHORT (reverse) วางที่ HH (ขอบบน)
         float sl = tradeDir == 1 ? (inpSlEdgeMode ? patHL : ent - oneR) : (inpSlEdgeMode ? patHH : ent + oneR)
-        float tp = tradeDir == 1 ? ent + oneR * inpRRRatio : ent - oneR * inpRRRatio
-        float lot = oneR > 0 ? inpRiskAmount / (oneR * inpPipValueRatio) : 0
+        // effOneR: ถ้าเปิด inpSlEdgeSelfR → ใช้ระยะ entry-SL จริง (มีผลเมื่อ Edge Mode ON)
+        float effOneR = inpSlEdgeSelfR ? math.abs(ent - sl) : oneR
+        float tp = tradeDir == 1 ? ent + effOneR * inpRRRatio : ent - effOneR * inpRRRatio
+        float lot = effOneR > 0 ? inpRiskAmount / (effOneR * inpPipValueRatio) : 0
         color   pcol   = tradeDir == 1 ? inpUpColor : inpDownColor
         string  psstr  = tradeDir == 1 ? "BUY" : "SELL"
         pendingDir       := tradeDir
@@ -874,8 +884,10 @@ if barstate.isconfirmed and buySignal and posDir == 0 and pendingDir == 0
         float ent = tradeDir == 1 ? patHH + inpSpreadPts : patHH - inpSpreadPts
         // SL Edge Mode: LONG (normal) วางที่ HL (ตึงสุด), SHORT (reverse) วางที่ HH (ขอบบน)
         float sl = tradeDir == 1 ? (inpSlEdgeMode ? patHL : ent - oneR) : (inpSlEdgeMode ? patHH : ent + oneR)
-        float tp = tradeDir == 1 ? ent + oneR * inpRRRatio : ent - oneR * inpRRRatio
-        float lot = oneR > 0 ? inpRiskAmount / (oneR * inpPipValueRatio) : 0
+        // effOneR: ถ้าเปิด inpSlEdgeSelfR → ใช้ระยะ entry-SL จริง
+        float effOneR = inpSlEdgeSelfR ? math.abs(ent - sl) : oneR
+        float tp = tradeDir == 1 ? ent + effOneR * inpRRRatio : ent - effOneR * inpRRRatio
+        float lot = effOneR > 0 ? inpRiskAmount / (effOneR * inpPipValueRatio) : 0
         color   pcol   = tradeDir == 1 ? inpUpColor : inpDownColor
         string  psstr  = tradeDir == 1 ? "BUY" : "SELL"
         pendingDir       := tradeDir
@@ -904,8 +916,10 @@ if barstate.isconfirmed and buySignal and posDir == 0 and pendingDir == 0
         // SL Edge Mode: LONG (normal) วางที่ HL (ตึงสุด), SHORT (reverse) วางที่ HH (ขอบบน)
         float sl = tradeDir == 1 ? (inpSlEdgeMode ? patHL : ent - oneR) : (inpSlEdgeMode ? patHH : ent + oneR)
         float risk = math.abs(ent - sl)
-        float tp = tradeDir == 1 ? ent + oneR * inpRRRatio : ent - oneR * inpRRRatio
-        float lot = oneR > 0 ? inpRiskAmount / (oneR * inpPipValueRatio) : 0
+        // effOneR: ถ้าเปิด inpSlEdgeSelfR → ใช้ระยะ entry-SL จริง
+        float effOneR = inpSlEdgeSelfR ? risk : oneR
+        float tp = tradeDir == 1 ? ent + effOneR * inpRRRatio : ent - effOneR * inpRRRatio
+        float lot = effOneR > 0 ? inpRiskAmount / (effOneR * inpPipValueRatio) : 0
         [sLn3, tLn3] = f_drawEntry(tradeDir, ent, sl, tp, risk, lot, tagStr)
         posDir := tradeDir
         entryPrice := ent
@@ -944,8 +958,10 @@ if barstate.isconfirmed and sellSignal and posDir == 0 and pendingDir == 0
         string dowTag = "HH→LL→LH ⤵"
         float dowSL = inpDowSLMode == DOW_SL_PIVOT ? patLH : patLL + (patLH - patLL) * (inpDowSLPct / 100.0)
         float ent = patLL - inpSpreadPts
-        float tp = ent - oneR * inpRRRatio
-        float lot = oneR > 0 ? inpRiskAmount / (oneR * inpPipValueRatio) : 0
+        // effOneR: ถ้าเปิด inpDowSelfR → ใช้ระยะ entry-SL จริง
+        float effOneR = inpDowSelfR ? math.abs(ent - dowSL) : oneR
+        float tp = ent - effOneR * inpRRRatio
+        float lot = effOneR > 0 ? inpRiskAmount / (effOneR * inpPipValueRatio) : 0
         pendingDir        := -1
         pendingEntry      := ent
         pendingSL         := dowSL
@@ -976,8 +992,10 @@ if barstate.isconfirmed and sellSignal and posDir == 0 and pendingDir == 0
         float ent = tradeDir == 1 ? pbLevel + inpSpreadPts : pbLevel - inpSpreadPts
         // SL Edge Mode: SHORT (normal) วางที่ LH (ตึงสุด), LONG (reverse) วางที่ LL (ขอบล่าง)
         float sl = tradeDir == 1 ? (inpSlEdgeMode ? patLL : ent - oneR) : (inpSlEdgeMode ? patLH : ent + oneR)
-        float tp = tradeDir == 1 ? ent + oneR * inpRRRatio : ent - oneR * inpRRRatio
-        float lot = oneR > 0 ? inpRiskAmount / (oneR * inpPipValueRatio) : 0
+        // effOneR: ถ้าเปิด inpSlEdgeSelfR → ใช้ระยะ entry-SL จริง
+        float effOneR = inpSlEdgeSelfR ? math.abs(ent - sl) : oneR
+        float tp = tradeDir == 1 ? ent + effOneR * inpRRRatio : ent - effOneR * inpRRRatio
+        float lot = effOneR > 0 ? inpRiskAmount / (effOneR * inpPipValueRatio) : 0
         color   pcol   = tradeDir == 1 ? inpUpColor : inpDownColor
         string  psstr  = tradeDir == 1 ? "BUY" : "SELL"
         pendingDir       := tradeDir
@@ -1004,8 +1022,10 @@ if barstate.isconfirmed and sellSignal and posDir == 0 and pendingDir == 0
         float ent = tradeDir == 1 ? patLL + inpSpreadPts : patLL - inpSpreadPts
         // SL Edge Mode: SHORT (normal) วางที่ LH (ตึงสุด), LONG (reverse) วางที่ LL (ขอบล่าง)
         float sl = tradeDir == 1 ? (inpSlEdgeMode ? patLL : ent - oneR) : (inpSlEdgeMode ? patLH : ent + oneR)
-        float tp = tradeDir == 1 ? ent + oneR * inpRRRatio : ent - oneR * inpRRRatio
-        float lot = oneR > 0 ? inpRiskAmount / (oneR * inpPipValueRatio) : 0
+        // effOneR: ถ้าเปิด inpSlEdgeSelfR → ใช้ระยะ entry-SL จริง
+        float effOneR = inpSlEdgeSelfR ? math.abs(ent - sl) : oneR
+        float tp = tradeDir == 1 ? ent + effOneR * inpRRRatio : ent - effOneR * inpRRRatio
+        float lot = effOneR > 0 ? inpRiskAmount / (effOneR * inpPipValueRatio) : 0
         color   pcol   = tradeDir == 1 ? inpUpColor : inpDownColor
         string  psstr  = tradeDir == 1 ? "BUY" : "SELL"
         pendingDir       := tradeDir
@@ -1034,8 +1054,10 @@ if barstate.isconfirmed and sellSignal and posDir == 0 and pendingDir == 0
         // SL Edge Mode: SHORT (normal) วางที่ LH (ตึงสุด), LONG (reverse) วางที่ LL (ขอบล่าง)
         float sl = tradeDir == 1 ? (inpSlEdgeMode ? patLL : ent - oneR) : (inpSlEdgeMode ? patLH : ent + oneR)
         float risk = math.abs(ent - sl)
-        float tp = tradeDir == 1 ? ent + oneR * inpRRRatio : ent - oneR * inpRRRatio
-        float lot = oneR > 0 ? inpRiskAmount / (oneR * inpPipValueRatio) : 0
+        // effOneR: ถ้าเปิด inpSlEdgeSelfR → ใช้ระยะ entry-SL จริง
+        float effOneR = inpSlEdgeSelfR ? risk : oneR
+        float tp = tradeDir == 1 ? ent + effOneR * inpRRRatio : ent - effOneR * inpRRRatio
+        float lot = effOneR > 0 ? inpRiskAmount / (effOneR * inpPipValueRatio) : 0
         [sLn4, tLn4] = f_drawEntry(tradeDir, ent, sl, tp, risk, lot, tagStr)
         posDir := tradeDir
         entryPrice := ent
