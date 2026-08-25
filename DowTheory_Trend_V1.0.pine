@@ -8,8 +8,8 @@
 //    - Buy  : LL -> HH -> HL confirm (ต้องเรียงติดกัน ห้าม LH คั่น) -> เข้า Buy ที่แท่งที่ HL confirm
 //    - Sell : HH -> LL -> LH confirm (ต้องเรียงติดกัน ห้าม HL คั่น) -> เข้า Sell ที่แท่งที่ LH confirm
 //    วาดเส้นเล็ก ๆ ที่ระดับราคาเปิดออเดอร์เป็น marker
-// 5. Entry Mode สไตล์ V10.1: Market (เข้าทันที) / Pullback (pending order) / Breakout (รอเบรค HH/LL)
-//    + Risk Management: 1R Basis (SL% / Distance / ATR), SL Edge Mode,
+// 5. Entry Mode: Pullback อย่างเดียว (pending order รอ dip ลึกกว่า HL / bounce สูงกว่า LH)
+//    + Risk Management: 1R Basis (SL% / Distance / ATR),
 //    Risk per 1R ($) → คำนวณ Lot อัตโนมัติ, R:R Ratio, Spread
 //    Exit เหลือแค่ SL / TP hit เท่านั้น
 // 6. Stats tables สไตล์ V10.1: Main Stats / By Day / Daily Log / Monthly
@@ -32,44 +32,20 @@ inpShowPanel    = input.bool(true, "Show Info Panel")
 inpEnableEntry     = input.bool(true, "Enable Dow Confirmation Entries", group="Entry Signals")
 inpShowPatternBox  = input.bool(true, "Show LL→HH→HL / HH→LL→LH Pattern Box", group="Entry Signals", tooltip="วาดกรอบครอบช่วง LL → HH → HL (สำหรับ Buy) หรือ HH → LL → LH (สำหรับ Sell) เพื่อให้สังเกต pattern ได้ง่าย")
 
-// --- Entry Mode (V10.1 style: Market / Pullback / Breakout / Dow Breakout) ---
-ENTRY_MODE_MARKET       = "1. Market"
-ENTRY_MODE_PULLBACK     = "2. Pullback"
-ENTRY_MODE_BREAKOUT     = "3. Breakout"
-ENTRY_MODE_DOW_BREAKOUT = "4. Dow Breakout"
-
-entryModeTip = "1. Market — เข้าที่ close ของแท่งที่ pattern confirm ทันที\n2. Pullback — สร้าง pending order รอราคาถอยเข้ากรอบ pattern\n3. Breakout — สร้าง pending order รอราคาเบรคผ่าน HH (ขาขึ้น) หรือ LL (ขาลง) ยกเลิกทันทีถ้ามี swing ใหม่มาคั่น\n4. Dow Breakout — เหมือน Breakout แต่เพิ่ม filter: ถ้าราคาเคยเบรค HH/LL ไปแล้วก่อน HL/LH confirm → ทิ้ง pattern (pattern เสีย). Reverse Trade ไม่มีผลใน mode นี้"
-
-inpEntryMode        = input.string(ENTRY_MODE_MARKET, "Entry Mode",
-     options=[ENTRY_MODE_MARKET, ENTRY_MODE_PULLBACK, ENTRY_MODE_BREAKOUT, ENTRY_MODE_DOW_BREAKOUT],
-     group="Entry Mode", tooltip=entryModeTip)
-inpPullbackMode     = input.string("% of Range", "Pullback Mode (Mode 2)",
+// --- Entry Mode: Pullback only (pending order รอราคา dip/bounce หลัง HL/LH confirm) ---
+inpPullbackMode     = input.string("% of Range", "Pullback Mode",
      options=["% of Price", "% of Range"], group="Entry Mode")
 inpPullbackPct      = input.float(0.4, " [% of Price] Pullback %", step=0.05, group="Entry Mode",
      tooltip="ใช้เมื่อ Pullback Mode = % of Price\n • BUY: pullback level = HL - HL × X% (dip ต่ำกว่า HL อีก X% ของราคา HL)\n • SELL: pullback level = LH + LH × X% (bounce สูงกว่า LH อีก X% ของราคา LH)")
 inpPullbackRangePct = input.float(30, " [% of Range] Pullback %",
      minval=1, maxval=100, step=5, group="Entry Mode",
-     tooltip="ใช้เมื่อ Pullback Mode = % of Range\n • BUY: pullback level = HL - (HH-HL) × X% (dip ต่ำกว่า HL อีก X% ของช่วง HH-HL)\n • SELL: pullback level = LH + (LH-LL) × X% (bounce สูงกว่า LH อีก X% ของช่วง LH-LL)\n\nหมายเหตุ: HL/LH เพิ่ง confirm (เป็นก้นของ pullback / ยอดของ retracement แล้ว)\nPullback mode นี้จึงรอ dip/bounce ที่ลึก/สูงกว่านั้นอีก — ถ้าราคาไปถึงหมายความว่า pattern เริ่มเสี่ยงเสีย")
+     tooltip="ใช้เมื่อ Pullback Mode = % of Range\n • BUY: pullback level = HL - (HH-HL) × X% (dip ต่ำกว่า HL อีก X% ของช่วง HH-HL)\n • SELL: pullback level = LH + (LH-LL) × X% (bounce สูงกว่า LH อีก X% ของช่วง LH-LL)\n\nหมายเหตุ: HL/LH เพิ่ง confirm (เป็นก้นของ pullback / ยอดของ retracement แล้ว)\nPullback mode รอ dip/bounce ที่ลึก/สูงกว่านั้นอีก — ถ้าราคาไปถึงหมายความว่า pattern เริ่มเสี่ยงเสีย")
 inpPlanExpireBars   = input.int(50, "Pending Order Expiry (bars, 0 = no expiry)",
      minval=0, group="Entry Mode",
-     tooltip="ถ้าราคาไม่ถึง pullback level / breakout level ภายใน N แท่ง → ยกเลิก pending อัตโนมัติ\n0 = ไม่หมดอายุ (รอไปเรื่อย ๆ จนกว่าจะ fill หรือมีสัญญาณตรงข้าม/swing ใหม่มา cancel)")
+     tooltip="ถ้าราคาไม่ถึง pullback level ภายใน N แท่ง → ยกเลิก pending อัตโนมัติ\n0 = ไม่หมดอายุ (รอไปเรื่อย ๆ จนกว่าจะ fill หรือมีสัญญาณตรงข้าม/swing ใหม่มา cancel)")
 inpReverseTrade     = input.bool(false, "Reverse Trade (fade the pattern)",
      group="Entry Mode",
-     tooltip="เปิด = พลิกทิศเทรด (bet ว่า pattern เป็นสัญญาณหลอก)\n • LL→HH→HL detected → SELL แทน BUY (SL วางที่ HH ขอบบนของกรอบ)\n • HH→LL→LH detected → BUY แทน SELL (SL วางที่ LL ขอบล่างของกรอบ)\n\nเหมาะกับกรณีที่มองว่า pattern น่าจะเป็น false-breakout (เช่นใน sideways market)\n\nหมายเหตุ: Dow Breakout (Mode 4) จะบังคับทิศตาม pattern เสมอ (reverse ไม่มีผล)")
-
-// --- Dow Breakout SL settings (Mode 4 only) ---
-DOW_SL_PIVOT = "1. At Pivot (HL / LH)"
-DOW_SL_PCT   = "2. % of HH-HL Range from HH"
-
-inpDowSLMode = input.string(DOW_SL_PIVOT, "Dow Breakout SL Position",
-     options=[DOW_SL_PIVOT, DOW_SL_PCT], group="Entry Mode",
-     tooltip="ใช้เมื่อ Entry Mode = 4. Dow Breakout\n • At Pivot: SL วางที่ HL (BUY) / LH (SELL) ตรงเป๊ะ (ตึงสุด)\n • % of HH-HL Range: SL วางตาม % ของช่วง HH-HL (BUY) หรือ LH-LL (SELL) จากขอบ pattern")
-inpDowSLPct = input.float(100, " [% Range] SL Position (% of HH-HL from HH / LH-LL from LL)",
-     minval=10, maxval=200, step=5, group="Entry Mode",
-     tooltip="ใช้เมื่อ Dow Breakout SL = % of Range\n • BUY: SL = HH - (HH-HL) × X%   → 100 = HL ตรง, >100 = ต่ำกว่า HL (buffer), <100 = ระหว่าง HH-HL\n • SELL: SL = LL + (LH-LL) × X%  → 100 = LH ตรง, >100 = สูงกว่า LH (buffer)")
-inpDowSelfR = input.bool(false, " ↳ Dow Breakout: 1R = Actual SL Distance",
-     group="Entry Mode",
-     tooltip="ใช้เมื่อ Entry Mode = 4. Dow Breakout\n\nเปิด: oneR = |entry - Dow SL| จริง (entry = HH สำหรับ BUY / LL สำหรับ SELL)\n  • TP distance = SL distance × R:R (ตรงตาม R:R ที่ตั้ง)\n  • Lot ปรับให้ risk = Risk per 1R ($) พอดี\n\nปิด (default): TP/lot ใช้ 1R จาก 1R Basis (SL%/Distance/ATR) → RR ที่ได้จริงเบี้ยว")
+     tooltip="เปิด = พลิกทิศเทรด (bet ว่า pattern เป็นสัญญาณหลอก)\n • LL→HH→HL detected → SELL แทน BUY\n • HH→LL→LH detected → BUY แทน SELL\n\nเหมาะกับกรณีที่มองว่า pattern น่าจะเป็น false-breakout (เช่นใน sideways market)")
 
 // --- Recovery Mode (Normal) ---
 inpUseRecovery  = input.bool(false, "Enable Recovery", group="Recovery Mode",
@@ -99,12 +75,6 @@ inpOneRAtrPeriod = input.int(14, " [ATR] Period", minval=5, maxval=50, group="Ri
 inpOneRAtrMult   = input.float(1.5, " [ATR] Multiplier",
      minval=0.5, maxval=5, step=0.1, group="Risk Management",
      tooltip="1R = ATR(period) × Multiplier")
-inpSlEdgeMode    = input.bool(false, "SL at Pattern Edge (override)",
-     group="Risk Management",
-     tooltip="เปิด = SL วางที่ขอบ pattern (HL สำหรับ BUY, LH สำหรับ SELL) เสมอ\nโดย default 1R (สำหรับ TP และ lot) ยังใช้จาก 1R Basis → RR ที่ตั้งอาจไม่ตรงกับระยะจริง (SL Edge อาจใกล้กว่า 1R มาก)\nเปิด toggle ด้านล่างเพื่อให้ 1R = ระยะ entry-SL จริง")
-inpSlEdgeSelfR   = input.bool(false, " ↳ SL Edge: 1R = Actual SL Distance",
-     group="Risk Management",
-     tooltip="ใช้เมื่อ SL Edge Mode = ON (Modes 1-3)\n\nเปิด: oneR = |entry - SL edge| จริง\n  • TP distance = SL distance × R:R (ตรงตาม R:R ที่ตั้ง)\n  • Lot ปรับให้ risk = Risk per 1R ($) พอดี\n  • R accounting ตรงกับ RR ที่ตั้ง 1:1\n\nปิด (default): TP/lot ใช้ 1R จาก 1R Basis (SL%/Distance/ATR)\n  → RR ที่ได้จริงเบี้ยว\n\nไม่กระทบเมื่อ SL Edge Mode = OFF (SL อยู่ที่ ent±oneR อยู่แล้ว)")
 inpRiskAmount    = input.float(500.0, "Risk per 1R ($)",
      minval=0.01, group="Risk Management",
      tooltip="เงินที่ยอมเสียต่อ 1R — lot ถูก size ให้ hit 1R = ขาดทุนเท่านี้")
@@ -328,11 +298,6 @@ var int    llBar         = na   // bar_index ของ pivot LL ล่าสุ�
 var float  llPrice       = na   // ราคาของ pivot LL ล่าสุด
 var int    hhBar         = na   // bar_index ของ pivot HH ล่าสุด
 var float  hhPrice       = na   // ราคาของ pivot HH ล่าสุด
-// Dow Breakout filter: ติดตาม max high / min low หลัง pivot HH / LL เกิดขึ้น
-// รีเซ็ตทุกครั้งที่มี HH/LL ใหม่ (เริ่มติดตามจาก 3 แท่งหลัง pivot ที่เป็นช่วง confirm)
-// ใช้เช็คว่าราคาเคยเบรค HH/LL ไปก่อน HL/LH จะ confirm หรือไม่
-var float  maxHighAfterHH = na
-var float  minLowAfterLL  = na
 
 // ระบุว่ามี swing high/low ใหม่เพิ่ง confirm ในแท่งนี้หรือไม่
 bool newHighConfirmed = not na(isSwingHigh) and hCount >= 2
@@ -401,19 +366,6 @@ if newLowConfirmed
         llBar   := newLowBar
         llPrice := newLowPrice
 
-// --- Dow Breakout filter tracker (max high after HH / min low after LL) ---
-// เมื่อ HH เพิ่ง confirm: เริ่มติดตามจากแท่งหลัง HH pivot ถึงแท่งปัจจุบัน (ช่วง confirm)
-//   → ใช้ ta.highest(high, swingOffset) = highest of last swingOffset bars = แท่ง +1, +2, +3 หลัง HH pivot
-//   → pivot คือค่าสูงสุดใน ±swingOffset (strict) ดังนั้นค่านี้ < HH เสมอตอน confirm
-// แท่งถัดๆ ไป: update ด้วย math.max(prev, high) จนกว่าจะมี HH ใหม่มา reset
-if newHighConfirmed and newHighType == "HH"
-    maxHighAfterHH := ta.highest(high, swingOffset)
-else if not na(maxHighAfterHH)
-    maxHighAfterHH := math.max(maxHighAfterHH, high)
-if newLowConfirmed and newLowType == "LL"
-    minLowAfterLL := ta.lowest(low, swingOffset)
-else if not na(minLowAfterLL)
-    minLowAfterLL := math.min(minLowAfterLL, low)
 
 // (marker วงกลม + info label + arrow SL/TP + short marker + price tag
 //  ถูกย้ายไปวาดในบล็อก position-open ด้านล่าง สไตล์เดียวกับ V10.1)
@@ -791,75 +743,26 @@ if exitShortEvent
         isRecTrade := false
 
 // ==================================================================
-// === Entry: สร้าง position (Market) หรือ pending order (Pullback / Breakout) ===
+// === Entry: pending Pullback order เท่านั้น (ไม่มี market / breakout / dow แล้ว) ===
 // ==================================================================
 // --- BUY SIGNAL (LL→HH→HL pattern): normal = LONG, reverse = SHORT ---
 if barstate.isconfirmed and buySignal and posDir == 0 and pendingDir == 0
-    float patHH   = hhPrice          // HH ก่อนหน้า (จาก state — ตัว trigger pattern)
-    float patLL   = llPrice          // LL ก่อนหน้า (จาก state — ตัวเริ่ม pattern)
-    float patHL   = newLowPrice      // HL ที่เพิ่ง confirm (จุด entry trigger)
-    float patRng  = patHH - patLL    // ระยะกว้าง — ใช้คำนวณ 1R (Option A)
+    float patHH   = hhPrice          // HH ก่อนหน้า (จาก state)
+    float patLL   = llPrice          // LL ก่อนหน้า
+    float patHL   = newLowPrice      // HL ที่เพิ่ง confirm
+    float patRng  = patHH - patLL    // ระยะกว้าง — ใช้คำนวณ 1R
     float pbRng   = patHH - patHL    // ระยะแคบ HH-HL — ใช้สำหรับ pullback %
     float oneR    = f_oneR(patRng)
     int    tradeDir = inpReverseTrade ? -1 : 1
     string tagStr   = inpReverseTrade ? "LL→HH→HL ⇄" : "LL→HH→HL"
-    // Pullback level (Mode 2) — dip ต่ำกว่า HL (pullback ที่ลึกขึ้น หลัง HL confirm แล้ว)
-    // BUY: pbLevel = HL - (HH-HL) × X%  (X% ของ HH-HL ต่ำกว่า HL)
-    //      หรือ HL - HL × X% (Mode "% of Price")
-    // ราคาต้อง dip ลงมาถึง level นี้ จึงจะ fill (ถ้าไม่ถึง = pattern ยังไม่ให้เข้า)
+    // Pullback level — dip ต่ำกว่า HL อีก X%
     float pbLevel = inpPullbackMode == "% of Range" ? patHL - pbRng * (inpPullbackRangePct / 100.0) : patHL - patHL * inpPullbackPct / 100.0
-    // Pending รอได้ก็ต่อเมื่อ level อยู่ "ต่ำกว่า" ราคาปัจจุบันเท่านั้น
-    // ถ้าราคาถอยผ่าน level มาแล้ว -> เข้า market ที่ close ทันที (fill จริงบนแท่งนี้)
-    // กันบัค "ออเดอร์ผี" ที่ fill ณ ราคาที่ตลาดผ่านไปแล้ว
-    bool waitPullback = inpEntryMode == ENTRY_MODE_PULLBACK and pbLevel < close
-    // Breakout: รอราคาเบรคเหนือ HH (close ยังต่ำกว่า HH -> สร้าง pending)
-    bool waitBreakout = inpEntryMode == ENTRY_MODE_BREAKOUT and patHH > close
-    // Dow Breakout (Mode 4): buy stop @ HH + filter "ราคาต้องไม่เคยเบรค HH หลัง HH pivot"
-    // Reverse Trade ไม่มีผล — บังคับ LONG เสมอ
-    bool isDowBreakout = inpEntryMode == ENTRY_MODE_DOW_BREAKOUT
-    bool dowFilterPass = not na(maxHighAfterHH) and maxHighAfterHH < patHH and patHH > close
-    if isDowBreakout and dowFilterPass
-        string dowTag = "LL→HH→HL ⤴"
-        float dowSL = inpDowSLMode == DOW_SL_PIVOT ? patHL : patHH - (patHH - patHL) * (inpDowSLPct / 100.0)
-        float ent = patHH + inpSpreadPts
-        // effOneR: ถ้าเปิด inpDowSelfR → ใช้ระยะ entry-SL จริง (RR ตรง 1:1)
-        float effOneR = inpDowSelfR ? math.abs(ent - dowSL) : oneR
-        float tp = ent + effOneR * inpRRRatio
-        float lot = effOneR > 0 ? inpRiskAmount / (effOneR * inpPipValueRatio) : 0
-        pendingDir        := 1
-        pendingEntry      := ent
-        pendingSL         := dowSL
-        pendingTP         := tp
-        pendingRisk       := math.abs(ent - dowSL)
-        pendingLot        := lot
-        pendingCreateBar  := bar_index
-        pendingTag        := dowTag
-        pendingFillOnLow  := false
-        pendingIsBreakout := true    // cancel on any new swing (reuses existing logic)
-        pendingPatDir     := 1
-        pendingLine := line.new(bar_index, ent, bar_index + 20, ent,
-             color=inpUpColor, style=line.style_dashed, width=2)
-        pendingLabel := label.new(bar_index, ent,
-             text="PENDING BUY (" + dowTag + ")\n▲ Dow Break HH\nEntry: " + str.tostring(ent, format.mintick) +
-                 "\nSL: " + str.tostring(dowSL, format.mintick) +
-                 "\nTP: " + str.tostring(tp, format.mintick) +
-                 "\nLot: " + str.tostring(lot, "#.##"),
-             color=color.new(inpUpColor, 30), textcolor=color.white,
-             style=label.style_label_up, size=size.small)
-    else if isDowBreakout
-        // Dow filter fail (HH เคยถูกเบรคก่อน HL confirm) → ทิ้ง pattern
-        label.new(bar_index, patHH,
-             text="✗ Dow filter (HH breached)",
-             style=label.style_label_down, color=color.new(color.gray, 30),
-             textcolor=color.white, size=size.tiny)
-    else if waitPullback
+    // สร้าง pending เฉพาะเมื่อ pbLevel ยังไม่ถูกราคาผ่าน (ต่ำกว่า close)
+    if pbLevel < close
         float ent = tradeDir == 1 ? pbLevel + inpSpreadPts : pbLevel - inpSpreadPts
-        // SL Edge Mode: LONG (normal) วางที่ HL (ตึงสุด), SHORT (reverse) วางที่ HH (ขอบบน)
-        float sl = tradeDir == 1 ? (inpSlEdgeMode ? patHL : ent - oneR) : (inpSlEdgeMode ? patHH : ent + oneR)
-        // effOneR: ถ้าเปิด inpSlEdgeSelfR → ใช้ระยะ entry-SL จริง (มีผลเมื่อ Edge Mode ON)
-        float effOneR = inpSlEdgeSelfR ? math.abs(ent - sl) : oneR
-        float tp = tradeDir == 1 ? ent + effOneR * inpRRRatio : ent - effOneR * inpRRRatio
-        float lot = effOneR > 0 ? inpRiskAmount / (effOneR * inpPipValueRatio) : 0
+        float sl  = tradeDir == 1 ? ent - oneR : ent + oneR
+        float tp  = tradeDir == 1 ? ent + oneR * inpRRRatio : ent - oneR * inpRRRatio
+        float lot = oneR > 0 ? inpRiskAmount / (oneR * inpPipValueRatio) : 0
         color   pcol   = tradeDir == 1 ? inpUpColor : inpDownColor
         string  psstr  = tradeDir == 1 ? "BUY" : "SELL"
         pendingDir       := tradeDir
@@ -882,124 +785,31 @@ if barstate.isconfirmed and buySignal and posDir == 0 and pendingDir == 0
                  "\nLot: " + str.tostring(lot, "#.##"),
              color=color.new(pcol, 30), textcolor=color.white,
              style=tradeDir == 1 ? label.style_label_up : label.style_label_down, size=size.small)
-    else if waitBreakout
-        float ent = tradeDir == 1 ? patHH + inpSpreadPts : patHH - inpSpreadPts
-        // SL Edge Mode: LONG (normal) วางที่ HL (ตึงสุด), SHORT (reverse) วางที่ HH (ขอบบน)
-        float sl = tradeDir == 1 ? (inpSlEdgeMode ? patHL : ent - oneR) : (inpSlEdgeMode ? patHH : ent + oneR)
-        // effOneR: ถ้าเปิด inpSlEdgeSelfR → ใช้ระยะ entry-SL จริง
-        float effOneR = inpSlEdgeSelfR ? math.abs(ent - sl) : oneR
-        float tp = tradeDir == 1 ? ent + effOneR * inpRRRatio : ent - effOneR * inpRRRatio
-        float lot = effOneR > 0 ? inpRiskAmount / (effOneR * inpPipValueRatio) : 0
-        color   pcol   = tradeDir == 1 ? inpUpColor : inpDownColor
-        string  psstr  = tradeDir == 1 ? "BUY" : "SELL"
-        pendingDir       := tradeDir
-        pendingEntry     := ent
-        pendingSL        := sl
-        pendingTP        := tp
-        pendingRisk      := math.abs(ent - sl)
-        pendingLot       := lot
-        pendingCreateBar := bar_index
-        pendingTag       := tagStr
-        pendingFillOnLow := false
-        pendingIsBreakout := true
-        pendingPatDir    := 1
-        pendingLine := line.new(bar_index, ent, bar_index + 20, ent,
-             color=pcol, style=line.style_dashed, width=2)
-        pendingLabel := label.new(bar_index, ent,
-             text="PENDING " + psstr + " (" + tagStr + ")\n▲ Break HH\nEntry: " + str.tostring(ent, format.mintick) +
-                 "\nSL: " + str.tostring(sl, format.mintick) +
-                 "\nTP: " + str.tostring(tp, format.mintick) +
-                 "\nLot: " + str.tostring(lot, "#.##"),
-             color=color.new(pcol, 30), textcolor=color.white,
-             style=tradeDir == 1 ? label.style_label_up : label.style_label_down, size=size.small)
     else
-        // Market entry หรือ pullback level ถูกผ่านมาแล้ว -> เข้าที่ close ของแท่ง confirm
-        float ent = tradeDir == 1 ? close + inpSpreadPts : close - inpSpreadPts
-        // SL Edge Mode: LONG (normal) วางที่ HL (ตึงสุด), SHORT (reverse) วางที่ HH (ขอบบน)
-        float sl = tradeDir == 1 ? (inpSlEdgeMode ? patHL : ent - oneR) : (inpSlEdgeMode ? patHH : ent + oneR)
-        float risk = math.abs(ent - sl)
-        // effOneR: ถ้าเปิด inpSlEdgeSelfR → ใช้ระยะ entry-SL จริง
-        float effOneR = inpSlEdgeSelfR ? risk : oneR
-        float tp = tradeDir == 1 ? ent + effOneR * inpRRRatio : ent - effOneR * inpRRRatio
-        float lot = effOneR > 0 ? inpRiskAmount / (effOneR * inpPipValueRatio) : 0
-        [sLn3, tLn3] = f_drawEntry(tradeDir, ent, sl, tp, risk, lot, tagStr)
-        posDir := tradeDir
-        entryPrice := ent
-        slPrice := sl
-        tpPrice := tp
-        initRisk := risk
-        lotSize := lot
-        tradeTime := time
-        tradeTag := tagStr
-        slLine := sLn3
-        tpLine := tLn3
-        tradeBarIdx := bar_index
+        // ราคา dip ต่ำกว่า pullback level ไปแล้ว → ทิ้ง signal (ไม่มี market fallback แล้ว)
+        label.new(bar_index, patHL,
+             text="✗ Pullback level passed",
+             style=label.style_label_down, color=color.new(color.gray, 30),
+             textcolor=color.white, size=size.tiny)
 
 // --- SELL SIGNAL (HH→LL→LH pattern): normal = SHORT, reverse = LONG ---
 if barstate.isconfirmed and sellSignal and posDir == 0 and pendingDir == 0
-    float patHH   = hhPrice          // HH ก่อนหน้า (จาก state — ตัวเริ่ม pattern)
-    float patLL   = llPrice          // LL ก่อนหน้า (จาก state — ตัว trigger pattern)
-    float patLH   = newHighPrice     // LH ที่เพิ่ง confirm (จุด entry trigger)
-    float patRng  = patHH - patLL    // ระยะกว้าง — ใช้คำนวณ 1R (Option A)
+    float patHH   = hhPrice
+    float patLL   = llPrice
+    float patLH   = newHighPrice     // LH ที่เพิ่ง confirm
+    float patRng  = patHH - patLL    // ระยะกว้าง — ใช้คำนวณ 1R
     float pbRng   = patLH - patLL    // ระยะแคบ LH-LL — ใช้สำหรับ pullback %
     float oneR    = f_oneR(patRng)
     int    tradeDir = inpReverseTrade ? 1 : -1
     string tagStr   = inpReverseTrade ? "HH→LL→LH ⇄" : "HH→LL→LH"
-    // Pullback level (Mode 2) — bounce สูงกว่า LH (retracement ที่สูงขึ้น หลัง LH confirm แล้ว)
-    // SELL: pbLevel = LH + (LH-LL) × X%  (X% ของ LH-LL สูงกว่า LH)
-    //       หรือ LH + LH × X% (Mode "% of Price")
-    // ราคาต้องเด้งขึ้นถึง level นี้ จึงจะ fill (ถ้าไม่ถึง = pattern ยังไม่ให้เข้า)
+    // Pullback level — bounce สูงกว่า LH อีก X%
     float pbLevel = inpPullbackMode == "% of Range" ? patLH + pbRng * (inpPullbackRangePct / 100.0) : patLH + patLH * inpPullbackPct / 100.0
-    // Pending รอได้ก็ต่อเมื่อ level อยู่ "สูงกว่า" ราคาปัจจุบันเท่านั้น
-    bool waitPullback = inpEntryMode == ENTRY_MODE_PULLBACK and pbLevel > close
-    // Breakout: รอราคาเบรคต่ำกว่า LL (close ยังสูงกว่า LL -> สร้าง pending)
-    bool waitBreakout = inpEntryMode == ENTRY_MODE_BREAKOUT and patLL < close
-    // Dow Breakout (Mode 4): sell stop @ LL + filter "ราคาต้องไม่เคยเบรค LL หลัง LL pivot"
-    // Reverse Trade ไม่มีผล — บังคับ SHORT เสมอ
-    bool isDowBreakout = inpEntryMode == ENTRY_MODE_DOW_BREAKOUT
-    bool dowFilterPass = not na(minLowAfterLL) and minLowAfterLL > patLL and patLL < close
-    if isDowBreakout and dowFilterPass
-        string dowTag = "HH→LL→LH ⤵"
-        float dowSL = inpDowSLMode == DOW_SL_PIVOT ? patLH : patLL + (patLH - patLL) * (inpDowSLPct / 100.0)
-        float ent = patLL - inpSpreadPts
-        // effOneR: ถ้าเปิด inpDowSelfR → ใช้ระยะ entry-SL จริง
-        float effOneR = inpDowSelfR ? math.abs(ent - dowSL) : oneR
-        float tp = ent - effOneR * inpRRRatio
-        float lot = effOneR > 0 ? inpRiskAmount / (effOneR * inpPipValueRatio) : 0
-        pendingDir        := -1
-        pendingEntry      := ent
-        pendingSL         := dowSL
-        pendingTP         := tp
-        pendingRisk       := math.abs(ent - dowSL)
-        pendingLot        := lot
-        pendingCreateBar  := bar_index
-        pendingTag        := dowTag
-        pendingFillOnLow  := true
-        pendingIsBreakout := true    // cancel on any new swing
-        pendingPatDir     := -1
-        pendingLine := line.new(bar_index, ent, bar_index + 20, ent,
-             color=inpDownColor, style=line.style_dashed, width=2)
-        pendingLabel := label.new(bar_index, ent,
-             text="PENDING SELL (" + dowTag + ")\n▼ Dow Break LL\nEntry: " + str.tostring(ent, format.mintick) +
-                 "\nSL: " + str.tostring(dowSL, format.mintick) +
-                 "\nTP: " + str.tostring(tp, format.mintick) +
-                 "\nLot: " + str.tostring(lot, "#.##"),
-             color=color.new(inpDownColor, 30), textcolor=color.white,
-             style=label.style_label_down, size=size.small)
-    else if isDowBreakout
-        // Dow filter fail (LL เคยถูกเบรคก่อน LH confirm) → ทิ้ง pattern
-        label.new(bar_index, patLL,
-             text="✗ Dow filter (LL breached)",
-             style=label.style_label_up, color=color.new(color.gray, 30),
-             textcolor=color.white, size=size.tiny)
-    else if waitPullback
+    // สร้าง pending เฉพาะเมื่อ pbLevel ยังไม่ถูกราคาผ่าน (สูงกว่า close)
+    if pbLevel > close
         float ent = tradeDir == 1 ? pbLevel + inpSpreadPts : pbLevel - inpSpreadPts
-        // SL Edge Mode: SHORT (normal) วางที่ LH (ตึงสุด), LONG (reverse) วางที่ LL (ขอบล่าง)
-        float sl = tradeDir == 1 ? (inpSlEdgeMode ? patLL : ent - oneR) : (inpSlEdgeMode ? patLH : ent + oneR)
-        // effOneR: ถ้าเปิด inpSlEdgeSelfR → ใช้ระยะ entry-SL จริง
-        float effOneR = inpSlEdgeSelfR ? math.abs(ent - sl) : oneR
-        float tp = tradeDir == 1 ? ent + effOneR * inpRRRatio : ent - effOneR * inpRRRatio
-        float lot = effOneR > 0 ? inpRiskAmount / (effOneR * inpPipValueRatio) : 0
+        float sl  = tradeDir == 1 ? ent - oneR : ent + oneR
+        float tp  = tradeDir == 1 ? ent + oneR * inpRRRatio : ent - oneR * inpRRRatio
+        float lot = oneR > 0 ? inpRiskAmount / (oneR * inpPipValueRatio) : 0
         color   pcol   = tradeDir == 1 ? inpUpColor : inpDownColor
         string  psstr  = tradeDir == 1 ? "BUY" : "SELL"
         pendingDir       := tradeDir
@@ -1022,58 +832,12 @@ if barstate.isconfirmed and sellSignal and posDir == 0 and pendingDir == 0
                  "\nLot: " + str.tostring(lot, "#.##"),
              color=color.new(pcol, 30), textcolor=color.white,
              style=tradeDir == 1 ? label.style_label_up : label.style_label_down, size=size.small)
-    else if waitBreakout
-        float ent = tradeDir == 1 ? patLL + inpSpreadPts : patLL - inpSpreadPts
-        // SL Edge Mode: SHORT (normal) วางที่ LH (ตึงสุด), LONG (reverse) วางที่ LL (ขอบล่าง)
-        float sl = tradeDir == 1 ? (inpSlEdgeMode ? patLL : ent - oneR) : (inpSlEdgeMode ? patLH : ent + oneR)
-        // effOneR: ถ้าเปิด inpSlEdgeSelfR → ใช้ระยะ entry-SL จริง
-        float effOneR = inpSlEdgeSelfR ? math.abs(ent - sl) : oneR
-        float tp = tradeDir == 1 ? ent + effOneR * inpRRRatio : ent - effOneR * inpRRRatio
-        float lot = effOneR > 0 ? inpRiskAmount / (effOneR * inpPipValueRatio) : 0
-        color   pcol   = tradeDir == 1 ? inpUpColor : inpDownColor
-        string  psstr  = tradeDir == 1 ? "BUY" : "SELL"
-        pendingDir       := tradeDir
-        pendingEntry     := ent
-        pendingSL        := sl
-        pendingTP        := tp
-        pendingRisk      := math.abs(ent - sl)
-        pendingLot       := lot
-        pendingCreateBar := bar_index
-        pendingTag       := tagStr
-        pendingFillOnLow := true
-        pendingIsBreakout := true
-        pendingPatDir    := -1
-        pendingLine := line.new(bar_index, ent, bar_index + 20, ent,
-             color=pcol, style=line.style_dashed, width=2)
-        pendingLabel := label.new(bar_index, ent,
-             text="PENDING " + psstr + " (" + tagStr + ")\n▼ Break LL\nEntry: " + str.tostring(ent, format.mintick) +
-                 "\nSL: " + str.tostring(sl, format.mintick) +
-                 "\nTP: " + str.tostring(tp, format.mintick) +
-                 "\nLot: " + str.tostring(lot, "#.##"),
-             color=color.new(pcol, 30), textcolor=color.white,
-             style=tradeDir == 1 ? label.style_label_up : label.style_label_down, size=size.small)
     else
-        // Market entry หรือ pullback level ถูกผ่านมาแล้ว -> เข้าที่ close ของแท่ง confirm
-        float ent = tradeDir == 1 ? close + inpSpreadPts : close - inpSpreadPts
-        // SL Edge Mode: SHORT (normal) วางที่ LH (ตึงสุด), LONG (reverse) วางที่ LL (ขอบล่าง)
-        float sl = tradeDir == 1 ? (inpSlEdgeMode ? patLL : ent - oneR) : (inpSlEdgeMode ? patLH : ent + oneR)
-        float risk = math.abs(ent - sl)
-        // effOneR: ถ้าเปิด inpSlEdgeSelfR → ใช้ระยะ entry-SL จริง
-        float effOneR = inpSlEdgeSelfR ? risk : oneR
-        float tp = tradeDir == 1 ? ent + effOneR * inpRRRatio : ent - effOneR * inpRRRatio
-        float lot = effOneR > 0 ? inpRiskAmount / (effOneR * inpPipValueRatio) : 0
-        [sLn4, tLn4] = f_drawEntry(tradeDir, ent, sl, tp, risk, lot, tagStr)
-        posDir := tradeDir
-        entryPrice := ent
-        slPrice := sl
-        tpPrice := tp
-        initRisk := risk
-        lotSize := lot
-        tradeTime := time
-        tradeTag := tagStr
-        slLine := sLn4
-        tpLine := tLn4
-        tradeBarIdx := bar_index
+        // ราคาเด้งเลย pullback level ไปแล้ว → ทิ้ง signal
+        label.new(bar_index, patLH,
+             text="✗ Pullback level passed",
+             style=label.style_label_up, color=color.new(color.gray, 30),
+             textcolor=color.white, size=size.tiny)
 
 // --- ยืดเส้น SL/TP ตามแท่งขณะถือสถานะ + ยืดเส้น pending ---
 if posDir != 0
@@ -1113,7 +877,7 @@ if inpShowPanel and barstate.islast and hCount >= 2 and lCount >= 2
 
     string oneRLabel = inpOneRBasis == ONER_DIST ? "Distance " + str.tostring(inpOneRDistFix) : inpOneRBasis == ONER_ATR ? "ATR×" + str.tostring(inpOneRAtrMult) : "SL% " + str.tostring(inpOneRPctVal, "#.#") + "%"
     table.cell(panel, 0, 6, "Entry / 1R", text_color=color.aqua, text_size=size.small, text_halign=text.align_left)
-    table.cell(panel, 1, 6, inpEntryMode + "  ·  1R: " + oneRLabel + "  ·  RR 1:" + str.tostring(inpRRRatio, "#.#"), text_color=color.aqua, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 1, 6, "Pullback  ·  1R: " + oneRLabel + "  ·  RR 1:" + str.tostring(inpRRRatio, "#.#"), text_color=color.aqua, text_size=size.small, text_halign=text.align_left)
 
     posText  = posDir == 1 ? "LONG @ " + str.tostring(entryPrice, format.mintick) : posDir == -1 ? "SHORT @ " + str.tostring(entryPrice, format.mintick) : "FLAT"
     posColor = posDir == 1 ? inpUpColor : posDir == -1 ? inpDownColor : color.gray
@@ -1273,7 +1037,7 @@ if showStatsTable and barstate.islast
     else if statMode == "3. เจาะจงเดือนและปี (Specific Month)"
         periodStr := statTargetM + " " + str.tostring(actualTargetY)
     string stratShort = inpEnableEntry ? (inpReverseTrade ? "Dow Confirmation ⇄" : "Dow Confirmation") : "OFF"
-    string tpModeStr  = inpEntryMode + "  ·  RR 1:" + str.tostring(inpRRRatio, "#.#") + (inpSlEdgeMode ? "  ·  Edge SL" : "") + (inpReverseTrade ? "  ·  ⇄" : "")
+    string tpModeStr  = "Pullback  ·  RR 1:" + str.tostring(inpRRRatio, "#.#") + (inpReverseTrade ? "  ·  ⇄" : "")
     table.cell(statsTable, 0, 0,  "◆  DOW THEORY PERFORMANCE", text_color=lxTitleTx, text_size=size.small, bgcolor=lxHeadBg)
     table.cell(statsTable, 0, 1,  periodStr + "  ·  " + syminfo.ticker + " " + timeframe.period, text_color=lxMuted, text_size=size.tiny, bgcolor=lxSubBg)
     table.cell(statsTable, 0, 2,  "Strategy",   text_color=lxMuted, text_size=size.tiny,  bgcolor=lxRowA, text_halign=text.align_left)
