@@ -479,8 +479,12 @@ f_drawEntry(int dir, float ent, float sl, float tp, float risk, float lot, strin
 // สไตล์ V10.1 SessionBreak: state เดินทีละขั้นต่อแท่ง (แท่งที่เบรคจะยังไม่เช็ค
 // pullback ในแท่งเดียวกัน — ไม่รู้ลำดับ intra-bar)
 
+// กรอบใหม่ confirm ในแท่งนี้ → freeze กรอบเก่าทันที (ห้ามเช็คเบรค/ห้าม fill ในแท่งนี้)
+// ไม่งั้นกรอบเก่าจะยังทำงานในแท่งเดียวกับกรอบใหม่ (เบรค/fill ก่อนถูกยกเลิกตอนท้ายสคริปต์)
+bool newFrameEvent = barstate.isconfirmed and (frameBullSignal or frameBearSignal)
+
 // --- State 1: armed — รอราคาเบรคกรอบ (OCO บน/ล่าง) ---
-if barstate.isconfirmed and pendingState == 1 and posDir == 0
+if barstate.isconfirmed and not newFrameEvent and pendingState == 1 and posDir == 0
     bool brkUp = high >= frameHigh
     bool brkDn = low <= frameLow
     if brkUp and brkDn
@@ -532,7 +536,7 @@ if barstate.isconfirmed and pendingState == 1 and posDir == 0
 
 // --- State 2: เบรคแล้ว — รอราคาถอยกลับมาแตะ pullback level ---
 // (else-if กับ state 1: แท่งที่เพิ่งเบรคจะไม่เข้าบล็อกนี้ — รอเช็คแท่งถัดไป)
-else if barstate.isconfirmed and pendingState == 2 and posDir == 0
+else if barstate.isconfirmed and not newFrameEvent and pendingState == 2 and posDir == 0
     bool pbHit = pendingFillOnLow ? low <= pendingEntry : high >= pendingEntry
     if pbHit
         int tradeDir = inpReverseTrade ? -pendingBrkDir : pendingBrkDir
@@ -753,8 +757,8 @@ if exitShortEvent
 
 // ==================================================================
 // === New Frame (LL→HH / HH→LL confirm): ปิดของเก่าทั้งหมด → arm กรอบใหม่ ===
+// === (newFrameEvent ถูกประกาศไว้ก่อน state machine ด้านบน) ===
 // ==================================================================
-bool newFrameEvent = barstate.isconfirmed and (frameBullSignal or frameBearSignal)
 
 // --- 1) ปิด position ที่เปิดอยู่ (ที่ราคา close ของแท่ง confirm) ---
 // SL/TP intra-bar ของแท่งนี้ถูกเช็คไปก่อนแล้ว (exit block ด้านบน) — ถ้ายังรอด มาปิดที่นี่
