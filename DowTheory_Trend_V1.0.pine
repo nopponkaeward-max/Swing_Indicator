@@ -32,15 +32,16 @@ inpShowPanel    = input.bool(true, "Show Info Panel")
 inpEnableEntry     = input.bool(true, "Enable Dow Confirmation Entries", group="Entry Signals")
 inpShowPatternBox  = input.bool(true, "Show LL→HH→HL / HH→LL→LH Pattern Box", group="Entry Signals", tooltip="วาดกรอบครอบช่วง LL → HH → HL (สำหรับ Buy) หรือ HH → LL → LH (สำหรับ Sell) เพื่อให้สังเกต pattern ได้ง่าย")
 
-// --- Entry Mode (V10.1 style: Market / Pullback / Breakout) ---
-ENTRY_MODE_MARKET = "1. Market"
-ENTRY_MODE_PULLBACK = "2. Pullback"
-ENTRY_MODE_BREAKOUT = "3. Breakout"
+// --- Entry Mode (V10.1 style: Market / Pullback / Breakout / Dow Breakout) ---
+ENTRY_MODE_MARKET       = "1. Market"
+ENTRY_MODE_PULLBACK     = "2. Pullback"
+ENTRY_MODE_BREAKOUT     = "3. Breakout"
+ENTRY_MODE_DOW_BREAKOUT = "4. Dow Breakout"
 
-entryModeTip = "1. Market — เข้าที่ close ของแท่งที่ pattern confirm ทันที\n2. Pullback — สร้าง pending order รอราคาถอยเข้ากรอบ pattern\n3. Breakout — สร้าง pending order รอราคาเบรคผ่าน HH (ขาขึ้น) หรือ LL (ขาลง) ยกเลิกทันทีถ้ามี swing ใหม่มาคั่น"
+entryModeTip = "1. Market — เข้าที่ close ของแท่งที่ pattern confirm ทันที\n2. Pullback — สร้าง pending order รอราคาถอยเข้ากรอบ pattern\n3. Breakout — สร้าง pending order รอราคาเบรคผ่าน HH (ขาขึ้น) หรือ LL (ขาลง) ยกเลิกทันทีถ้ามี swing ใหม่มาคั่น\n4. Dow Breakout — เหมือน Breakout แต่เพิ่ม filter: ถ้าราคาเคยเบรค HH/LL ไปแล้วก่อน HL/LH confirm → ทิ้ง pattern (pattern เสีย). Reverse Trade ไม่มีผลใน mode นี้"
 
 inpEntryMode        = input.string(ENTRY_MODE_MARKET, "Entry Mode",
-     options=[ENTRY_MODE_MARKET, ENTRY_MODE_PULLBACK, ENTRY_MODE_BREAKOUT],
+     options=[ENTRY_MODE_MARKET, ENTRY_MODE_PULLBACK, ENTRY_MODE_BREAKOUT, ENTRY_MODE_DOW_BREAKOUT],
      group="Entry Mode", tooltip=entryModeTip)
 inpPullbackMode     = input.string("% of Range", "Pullback Mode (Mode 2)",
      options=["% of Price", "% of Range"], group="Entry Mode")
@@ -54,7 +55,18 @@ inpPlanExpireBars   = input.int(50, "Pending Order Expiry (bars, 0 = no expiry)"
      tooltip="ถ้าราคาไม่ถอยลงมาถึง pullback level ภายใน N แท่ง → ยกเลิก pending")
 inpReverseTrade     = input.bool(false, "Reverse Trade (fade the pattern)",
      group="Entry Mode",
-     tooltip="เปิด = พลิกทิศเทรด (bet ว่า pattern เป็นสัญญาณหลอก)\n • LL→HH→HL detected → SELL แทน BUY (SL วางที่ HH ขอบบนของกรอบ)\n • HH→LL→LH detected → BUY แทน SELL (SL วางที่ LL ขอบล่างของกรอบ)\n\nเหมาะกับกรณีที่มองว่า pattern น่าจะเป็น false-breakout (เช่นใน sideways market)")
+     tooltip="เปิด = พลิกทิศเทรด (bet ว่า pattern เป็นสัญญาณหลอก)\n • LL→HH→HL detected → SELL แทน BUY (SL วางที่ HH ขอบบนของกรอบ)\n • HH→LL→LH detected → BUY แทน SELL (SL วางที่ LL ขอบล่างของกรอบ)\n\nเหมาะกับกรณีที่มองว่า pattern น่าจะเป็น false-breakout (เช่นใน sideways market)\n\nหมายเหตุ: Dow Breakout (Mode 4) จะบังคับทิศตาม pattern เสมอ (reverse ไม่มีผล)")
+
+// --- Dow Breakout SL settings (Mode 4 only) ---
+DOW_SL_PIVOT = "1. At Pivot (HL / LH)"
+DOW_SL_PCT   = "2. % of HH-HL Range from HH"
+
+inpDowSLMode = input.string(DOW_SL_PIVOT, "Dow Breakout SL Position",
+     options=[DOW_SL_PIVOT, DOW_SL_PCT], group="Entry Mode",
+     tooltip="ใช้เมื่อ Entry Mode = 4. Dow Breakout\n • At Pivot: SL วางที่ HL (BUY) / LH (SELL) ตรงเป๊ะ (ตึงสุด)\n • % of HH-HL Range: SL วางตาม % ของช่วง HH-HL (BUY) หรือ LH-LL (SELL) จากขอบ pattern")
+inpDowSLPct = input.float(100, " [% Range] SL Position (% of HH-HL from HH / LH-LL from LL)",
+     minval=10, maxval=200, step=5, group="Entry Mode",
+     tooltip="ใช้เมื่อ Dow Breakout SL = % of Range\n • BUY: SL = HH - (HH-HL) × X%   → 100 = HL ตรง, >100 = ต่ำกว่า HL (buffer), <100 = ระหว่าง HH-HL\n • SELL: SL = LL + (LH-LL) × X%  → 100 = LH ตรง, >100 = สูงกว่า LH (buffer)")
 
 // --- Recovery Mode (Normal) ---
 inpUseRecovery  = input.bool(false, "Enable Recovery", group="Recovery Mode",
@@ -310,6 +322,11 @@ var int    llBar         = na   // bar_index ของ pivot LL ล่าสุ�
 var float  llPrice       = na   // ราคาของ pivot LL ล่าสุด
 var int    hhBar         = na   // bar_index ของ pivot HH ล่าสุด
 var float  hhPrice       = na   // ราคาของ pivot HH ล่าสุด
+// Dow Breakout filter: ติดตาม max high / min low หลัง pivot HH / LL เกิดขึ้น
+// รีเซ็ตทุกครั้งที่มี HH/LL ใหม่ (เริ่มติดตามจาก 3 แท่งหลัง pivot ที่เป็นช่วง confirm)
+// ใช้เช็คว่าราคาเคยเบรค HH/LL ไปก่อน HL/LH จะ confirm หรือไม่
+var float  maxHighAfterHH = na
+var float  minLowAfterLL  = na
 
 // ระบุว่ามี swing high/low ใหม่เพิ่ง confirm ในแท่งนี้หรือไม่
 bool newHighConfirmed = not na(isSwingHigh) and hCount >= 2
@@ -377,6 +394,20 @@ if newLowConfirmed
     if newLowType == "LL"
         llBar   := newLowBar
         llPrice := newLowPrice
+
+// --- Dow Breakout filter tracker (max high after HH / min low after LL) ---
+// เมื่อ HH เพิ่ง confirm: เริ่มติดตามจากแท่งหลัง HH pivot ถึงแท่งปัจจุบัน (ช่วง confirm)
+//   → ใช้ ta.highest(high, swingOffset) = highest of last swingOffset bars = แท่ง +1, +2, +3 หลัง HH pivot
+//   → pivot คือค่าสูงสุดใน ±swingOffset (strict) ดังนั้นค่านี้ < HH เสมอตอน confirm
+// แท่งถัดๆ ไป: update ด้วย math.max(prev, high) จนกว่าจะมี HH ใหม่มา reset
+if newHighConfirmed and newHighType == "HH"
+    maxHighAfterHH := ta.highest(high, swingOffset)
+else if not na(maxHighAfterHH)
+    maxHighAfterHH := math.max(maxHighAfterHH, high)
+if newLowConfirmed and newLowType == "LL"
+    minLowAfterLL := ta.lowest(low, swingOffset)
+else if not na(minLowAfterLL)
+    minLowAfterLL := math.min(minLowAfterLL, low)
 
 // (marker วงกลม + info label + arrow SL/TP + short marker + price tag
 //  ถูกย้ายไปวาดในบล็อก position-open ด้านล่าง สไตล์เดียวกับ V10.1)
@@ -775,7 +806,43 @@ if barstate.isconfirmed and buySignal and posDir == 0 and pendingDir == 0
     bool waitPullback = inpEntryMode == ENTRY_MODE_PULLBACK and pbLevel < close
     // Breakout: รอราคาเบรคเหนือ HH (close ยังต่ำกว่า HH -> สร้าง pending)
     bool waitBreakout = inpEntryMode == ENTRY_MODE_BREAKOUT and patHH > close
-    if waitPullback
+    // Dow Breakout (Mode 4): buy stop @ HH + filter "ราคาต้องไม่เคยเบรค HH หลัง HH pivot"
+    // Reverse Trade ไม่มีผล — บังคับ LONG เสมอ
+    bool isDowBreakout = inpEntryMode == ENTRY_MODE_DOW_BREAKOUT
+    bool dowFilterPass = not na(maxHighAfterHH) and maxHighAfterHH < patHH and patHH > close
+    if isDowBreakout and dowFilterPass
+        string dowTag = "LL→HH→HL ⤴"
+        float dowSL = inpDowSLMode == DOW_SL_PIVOT ? patHL : patHH - (patHH - patHL) * (inpDowSLPct / 100.0)
+        float ent = patHH + inpSpreadPts
+        float tp = ent + oneR * inpRRRatio
+        float lot = oneR > 0 ? inpRiskAmount / (oneR * inpPipValueRatio) : 0
+        pendingDir        := 1
+        pendingEntry      := ent
+        pendingSL         := dowSL
+        pendingTP         := tp
+        pendingRisk       := math.abs(ent - dowSL)
+        pendingLot        := lot
+        pendingCreateBar  := bar_index
+        pendingTag        := dowTag
+        pendingFillOnLow  := false
+        pendingIsBreakout := true    // cancel on any new swing (reuses existing logic)
+        pendingPatDir     := 1
+        pendingLine := line.new(bar_index, ent, bar_index + 20, ent,
+             color=inpUpColor, style=line.style_dashed, width=2)
+        pendingLabel := label.new(bar_index, ent,
+             text="PENDING BUY (" + dowTag + ")\n▲ Dow Break HH\nEntry: " + str.tostring(ent, format.mintick) +
+                 "\nSL: " + str.tostring(dowSL, format.mintick) +
+                 "\nTP: " + str.tostring(tp, format.mintick) +
+                 "\nLot: " + str.tostring(lot, "#.##"),
+             color=color.new(inpUpColor, 30), textcolor=color.white,
+             style=label.style_label_up, size=size.small)
+    else if isDowBreakout
+        // Dow filter fail (HH เคยถูกเบรคก่อน HL confirm) → ทิ้ง pattern
+        label.new(bar_index, patHH,
+             text="✗ Dow filter (HH breached)",
+             style=label.style_label_down, color=color.new(color.gray, 30),
+             textcolor=color.white, size=size.tiny)
+    else if waitPullback
         float ent = tradeDir == 1 ? pbLevel + inpSpreadPts : pbLevel - inpSpreadPts
         // SL Edge Mode: LONG (normal) วางที่ HL (ตึงสุด), SHORT (reverse) วางที่ HH (ขอบบน)
         float sl = tradeDir == 1 ? (inpSlEdgeMode ? patHL : ent - oneR) : (inpSlEdgeMode ? patHH : ent + oneR)
@@ -869,7 +936,43 @@ if barstate.isconfirmed and sellSignal and posDir == 0 and pendingDir == 0
     bool waitPullback = inpEntryMode == ENTRY_MODE_PULLBACK and pbLevel > close
     // Breakout: รอราคาเบรคต่ำกว่า LL (close ยังสูงกว่า LL -> สร้าง pending)
     bool waitBreakout = inpEntryMode == ENTRY_MODE_BREAKOUT and patLL < close
-    if waitPullback
+    // Dow Breakout (Mode 4): sell stop @ LL + filter "ราคาต้องไม่เคยเบรค LL หลัง LL pivot"
+    // Reverse Trade ไม่มีผล — บังคับ SHORT เสมอ
+    bool isDowBreakout = inpEntryMode == ENTRY_MODE_DOW_BREAKOUT
+    bool dowFilterPass = not na(minLowAfterLL) and minLowAfterLL > patLL and patLL < close
+    if isDowBreakout and dowFilterPass
+        string dowTag = "HH→LL→LH ⤵"
+        float dowSL = inpDowSLMode == DOW_SL_PIVOT ? patLH : patLL + (patLH - patLL) * (inpDowSLPct / 100.0)
+        float ent = patLL - inpSpreadPts
+        float tp = ent - oneR * inpRRRatio
+        float lot = oneR > 0 ? inpRiskAmount / (oneR * inpPipValueRatio) : 0
+        pendingDir        := -1
+        pendingEntry      := ent
+        pendingSL         := dowSL
+        pendingTP         := tp
+        pendingRisk       := math.abs(ent - dowSL)
+        pendingLot        := lot
+        pendingCreateBar  := bar_index
+        pendingTag        := dowTag
+        pendingFillOnLow  := true
+        pendingIsBreakout := true    // cancel on any new swing
+        pendingPatDir     := -1
+        pendingLine := line.new(bar_index, ent, bar_index + 20, ent,
+             color=inpDownColor, style=line.style_dashed, width=2)
+        pendingLabel := label.new(bar_index, ent,
+             text="PENDING SELL (" + dowTag + ")\n▼ Dow Break LL\nEntry: " + str.tostring(ent, format.mintick) +
+                 "\nSL: " + str.tostring(dowSL, format.mintick) +
+                 "\nTP: " + str.tostring(tp, format.mintick) +
+                 "\nLot: " + str.tostring(lot, "#.##"),
+             color=color.new(inpDownColor, 30), textcolor=color.white,
+             style=label.style_label_down, size=size.small)
+    else if isDowBreakout
+        // Dow filter fail (LL เคยถูกเบรคก่อน LH confirm) → ทิ้ง pattern
+        label.new(bar_index, patLL,
+             text="✗ Dow filter (LL breached)",
+             style=label.style_label_up, color=color.new(color.gray, 30),
+             textcolor=color.white, size=size.tiny)
+    else if waitPullback
         float ent = tradeDir == 1 ? pbLevel + inpSpreadPts : pbLevel - inpSpreadPts
         // SL Edge Mode: SHORT (normal) วางที่ LH (ตึงสุด), LONG (reverse) วางที่ LL (ขอบล่าง)
         float sl = tradeDir == 1 ? (inpSlEdgeMode ? patLL : ent - oneR) : (inpSlEdgeMode ? patLH : ent + oneR)
