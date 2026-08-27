@@ -7,6 +7,13 @@
 
 ## Project Structure
 
+- `DowTheory_Trend_V1.0.mq5` - Expert Advisor สำหรับ MT5 (port จากไฟล์ .pine — logic เดียวกัน)
+  - เบรค/fill ตรวจแบบ tick-based (รู้ลำดับ intra-bar จริง จึงไม่ต้องมีกฎ "แท่งเบรคห้าม fill" และไม่มีเคสเบรคสองฝั่งพร้อมกัน), pivot/frame confirm แบบ bar-close, spread ใช้ bid/ask จริง (ไม่มี input spread)
+  - Warm-up: OnInit ไล่สร้าง swing/frame state จากอดีต (ไม่ส่งออเดอร์ย้อนหลัง — กรอบที่เบรค/fill ไปแล้วในอดีตถือว่า consumed), รับ position เดิมของ EA กลับหลัง restart (adopt by magic + "Reco" ใน comment)
+  - Recovery ผ่าน `OnTradeTransaction`: DEAL_ENTRY_OUT + DEAL_REASON_SL + ขาดทุน → เปิด recovery market ทันที (ราคาปัจจุบัน ≈ SL), 1R สืบทอด, ห้ามซ้อน
+  - Lot: default คำนวณจาก tick value จริง (`lot = Risk$ / (1R/tickSize×tickValue)`), ปิดได้เพื่อใช้สูตร Pine (`1R × pipValueRatio`); clamp กับ volume min/max/step; กัน SL/TP แคบกว่า stops level
+  - วาด: swing labels (HH/HL/LH/LL), เส้นขอบกรอบ (น้ำเงิน/แดง), เส้น pullback (magenta), กล่องกรอบ, trendlines; Info panel + stats (trades/WR/NetR) ผ่าน `Comment()`
+  - กันเคส: แท่งพลาดตอน disconnect (ไล่ process ทุกแท่งที่ปิดค้าง), history ไม่ครบ (iHigh=0), partial fill (DONE_PARTIAL), filling mode ตาม symbol
 - `DowTheory_Trend_V1.0.pine` - Dow Theory Trend indicator (Pine Script v6)
   - Swing High/Low detection (Fractal method)
   - Trendline drawing (Uptrend/Downtrend)
