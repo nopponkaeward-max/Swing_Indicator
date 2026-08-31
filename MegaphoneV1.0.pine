@@ -4,7 +4,7 @@
 // 1. หา Swing High/Low อัตโนมัติ (Fractal) + label HH/HL/LH/LL
 // 2. ตรวจ Megaphone: ยอดทำ Higher High ต่อเนื่อง + ก้นทำ Lower Low ต่อเนื่อง (กรอบถ่างออก)
 // 3. ตรวจ Sequence Pattern: HH-HL-HH-LL-HH-LL (swing เรียงตามรูปแบบเฉพาะ)
-// 4. วาด: เส้นขอบ + กล่องครอบ + label; รูปแบบเก่า freeze คาไว้, รูปแบบใหม่วาดชุดใหม่
+// 4. วาด: เส้นขอบ + กล่องครอบ + เส้นแบ่ง 50% + label; รูปแบบเก่า freeze คาไว้
 // *** ตรวจจับ + วาดอย่างเดียว — ไม่มีสัญญาณเทรด ***
 
 //@version=6
@@ -23,16 +23,20 @@ inpMinFall     = input.int(2, "Min Descending Lows (falling steps)", minval=1, m
      tooltip="จำนวนขั้นที่ก้นต้องต่ำลงต่อเนื่อง\n2 = ก้น 3 จุดเรียงต่ำลง (L1>L2>L3)")
 inpShowTrend   = input.bool(true, "Show Boundary Trendlines", group="Megaphone")
 inpShowBox     = input.bool(true, "Show Bounding Box", group="Megaphone")
+inpShowMid     = input.bool(true, "Show 50% Midline", group="Megaphone")
 inpUpColor     = input.color(color.lime, "Upper Boundary Color", group="Megaphone")
 inpDownColor   = input.color(color.red, "Lower Boundary Color", group="Megaphone")
+inpMidColor    = input.color(color.white, "Midline Color", group="Megaphone")
 inpBoxColor    = input.color(color.orange, "Box / Label Color", group="Megaphone")
 inpAlertOn     = input.bool(true, "Alert on New Megaphone", group="Megaphone")
 
 // --- Sequence Pattern Detection (HH-HL-HH-LL-HH-LL) ---
 inpSeqTrend    = input.bool(true, "Show Boundary Trendlines", group="Sequence Pattern")
 inpSeqBox      = input.bool(true, "Show Bounding Box", group="Sequence Pattern")
+inpSeqMid      = input.bool(true, "Show 50% Midline", group="Sequence Pattern")
 inpSeqUpColor  = input.color(color.teal, "Upper Boundary Color", group="Sequence Pattern")
 inpSeqDnColor  = input.color(color.maroon, "Lower Boundary Color", group="Sequence Pattern")
+inpSeqMidColor = input.color(color.white, "Midline Color", group="Sequence Pattern")
 inpSeqBoxColor = input.color(color.yellow, "Box / Label Color", group="Sequence Pattern")
 inpAlertSeqPat = input.bool(true, "Alert on Sequence Pattern", group="Sequence Pattern")
 
@@ -132,6 +136,7 @@ f_countFalling() =>
 var bool  megaActive   = false
 var line  megaUp       = na
 var line  megaDn       = na
+var line  megaMid      = na
 var box   megaBox      = na
 var int   megaStartBar = na
 var int   curRise      = 0
@@ -165,6 +170,16 @@ if barstate.isconfirmed and newPivot
         float boxTop    = math.max(upToP, upFromP)
         float boxBottom = math.min(loToP, loFromP)
 
+        // 50% midline: interpolate upper & lower boundaries at boxLeft/boxRight
+        float upSlope = (upToP - upFromP) / math.max(upToB - upFromB, 1)
+        float loSlope = (loToP - loFromP) / math.max(loToB - loFromB, 1)
+        float upAtL   = upFromP + upSlope * (boxLeft - upFromB)
+        float upAtR   = upFromP + upSlope * (boxRight - upFromB)
+        float loAtL   = loFromP + loSlope * (boxLeft - loFromB)
+        float loAtR   = loFromP + loSlope * (boxRight - loFromB)
+        float midLP   = (upAtL + loAtL) / 2
+        float midRP   = (upAtR + loAtR) / 2
+
         if not megaActive
             megaActive := true
             newMega := true
@@ -174,6 +189,9 @@ if barstate.isconfirmed and newPivot
                      color=inpUpColor, width=2, extend=extend.right)
                 megaDn := line.new(loFromB, loFromP, loToB, loToP,
                      color=inpDownColor, width=2, extend=extend.right)
+            if inpShowMid
+                megaMid := line.new(boxLeft, midLP, boxRight, midRP,
+                     color=inpMidColor, width=1, style=line.style_dashed, extend=extend.right)
             if inpShowBox
                 megaBox := box.new(boxLeft, boxTop, boxRight, boxBottom,
                      bgcolor=color.new(inpBoxColor, 92),
@@ -189,6 +207,9 @@ if barstate.isconfirmed and newPivot
             if not na(megaDn)
                 line.set_xy1(megaDn, loFromB, loFromP)
                 line.set_xy2(megaDn, loToB, loToP)
+            if not na(megaMid)
+                line.set_xy1(megaMid, boxLeft, midLP)
+                line.set_xy2(megaMid, boxRight, midRP)
             if not na(megaBox)
                 box.set_lefttop(megaBox, boxLeft, boxTop)
                 box.set_rightbottom(megaBox, boxRight, boxBottom)
@@ -199,19 +220,21 @@ if barstate.isconfirmed and newPivot
                 line.set_extend(megaUp, extend.none)
             if not na(megaDn)
                 line.set_extend(megaDn, extend.none)
+            if not na(megaMid)
+                line.set_extend(megaMid, extend.none)
             megaUp  := na
             megaDn  := na
+            megaMid := na
             megaBox := na
 
 if inpAlertOn and newMega
     alert("Megaphone / Broadening Formation detected", alert.freq_once_per_bar)
 
 // === Sequence Pattern Detection (HH-HL-HH-LL-HH-LL) ===
-// ตรวจจับ 6 swing ล่าสุดตามลำดับเวลา: HH(high) → HL(low) → HH(high) → LL(low) → HH(high) → LL(low)
-// ยอดทำ HH ขึ้นเรื่อยๆ 3 จุด ขณะที่ก้นเปลี่ยนจาก HL → LL → LL (เริ่มหลุด = กรอบถ่างออก)
 var bool  seqActive  = false
 var line  seqUpLine  = na
 var line  seqDnLine  = na
+var line  seqMidLine = na
 var box   seqBoxObj  = na
 bool newSeqPat = false
 
@@ -241,6 +264,16 @@ if barstate.isconfirmed and seqUpdated
         int   boxL   = math.min(b0, b1)
         int   boxR   = math.max(b4, b5)
 
+        // 50% midline: interpolate upper (b0→b4) & lower (b1→b5) at boxL/boxR
+        float sUpSlope = (p4 - p0) / math.max(b4 - b0, 1)
+        float sDnSlope = (p5 - p1) / math.max(b5 - b1, 1)
+        float sUpAtL   = p0 + sUpSlope * (boxL - b0)
+        float sUpAtR   = p0 + sUpSlope * (boxR - b0)
+        float sDnAtL   = p1 + sDnSlope * (boxL - b1)
+        float sDnAtR   = p1 + sDnSlope * (boxR - b1)
+        float sMidLP   = (sUpAtL + sDnAtL) / 2
+        float sMidRP   = (sUpAtR + sDnAtR) / 2
+
         if not seqActive
             seqActive := true
             newSeqPat := true
@@ -249,6 +282,9 @@ if barstate.isconfirmed and seqUpdated
                      color=inpSeqUpColor, width=2, extend=extend.right)
                 seqDnLine := line.new(b1, p1, b5, p5,
                      color=inpSeqDnColor, width=2, extend=extend.right)
+            if inpSeqMid
+                seqMidLine := line.new(boxL, sMidLP, boxR, sMidRP,
+                     color=inpSeqMidColor, width=1, style=line.style_dashed, extend=extend.right)
             if inpSeqBox
                 seqBoxObj := box.new(boxL, boxTop, boxR, boxBot,
                      bgcolor=color.new(inpSeqBoxColor, 92),
@@ -264,6 +300,9 @@ if barstate.isconfirmed and seqUpdated
             if not na(seqDnLine)
                 line.set_xy1(seqDnLine, b1, p1)
                 line.set_xy2(seqDnLine, b5, p5)
+            if not na(seqMidLine)
+                line.set_xy1(seqMidLine, boxL, sMidLP)
+                line.set_xy2(seqMidLine, boxR, sMidRP)
             if not na(seqBoxObj)
                 box.set_lefttop(seqBoxObj, boxL, boxTop)
                 box.set_rightbottom(seqBoxObj, boxR, boxBot)
@@ -274,9 +313,12 @@ if barstate.isconfirmed and seqUpdated
                 line.set_extend(seqUpLine, extend.none)
             if not na(seqDnLine)
                 line.set_extend(seqDnLine, extend.none)
-            seqUpLine := na
-            seqDnLine := na
-            seqBoxObj := na
+            if not na(seqMidLine)
+                line.set_extend(seqMidLine, extend.none)
+            seqUpLine  := na
+            seqDnLine  := na
+            seqMidLine := na
+            seqBoxObj  := na
 
 if inpAlertSeqPat and newSeqPat
     alert("Sequence Pattern HH-HL-HH-LL-HH-LL detected", alert.freq_once_per_bar)
