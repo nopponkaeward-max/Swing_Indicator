@@ -202,7 +202,7 @@ f_countFalling() =>
     cnt
 
 var bool  megaActive   = false
-var bool  megaIsBull   = na
+var bool  megaIsBull   = bool(na)
 var line  megaUp       = na
 var line  megaDn       = na
 var line  megaMid      = na
