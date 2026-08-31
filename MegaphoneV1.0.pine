@@ -525,7 +525,37 @@ if barstate.isconfirmed and use2ndOrder and array.size(tEntry) > 0
             float mBBot = array.get(tBoxBot, si)
             bool  midHit = mIsB ? low <= mMid : high >= mMid
             if midHit
-                array.set(tHas2nd, si, true)
+                // === CLOSE MAIN ORDER at midline ===
+                float mEnt      = array.get(tEntry, si)
+                float mOneR     = array.get(tOneR, si)
+                int   mBarIdx   = array.get(tBarIdx, si)
+                int   mOrigTime = array.get(tOriginTime, si)
+                float mPnlDist  = mIsB ? mMid - mEnt : mEnt - mMid
+                float mActualR  = mOneR > 0 ? mPnlDist / mOneR : 0
+                bool  mIsWin    = mActualR > 0
+                color mCloseCol = mIsWin ? color.green : mActualR == 0 ? color.gray : color.red
+                array.push(resIsWin, mIsWin)
+                array.push(resTradeRR, mActualR)
+                array.push(resTime, mOrigTime)
+                array.push(resIs2nd, false)
+                array.push(resPts, math.abs(mPnlDist))
+                if array.size(resIsWin) > 5000
+                    array.shift(resIsWin), array.shift(resTradeRR), array.shift(resTime)
+                    array.shift(resIs2nd), array.shift(resPts)
+                label.new(bar_index, mMid, text="", style=label.style_circle, color=color.new(mCloseCol, 50), size=size.normal)
+                string mRSign = mActualR >= 0 ? "+" : ""
+                label.new(bar_index, mMid, text="Close Main (2nd trigger)\n" + mRSign + str.tostring(mActualR, "#.##") + "R",
+                     color=color.new(color.gray, 20), textcolor=color.white,
+                     style=mIsB ? label.style_label_up : label.style_label_down, size=size.tiny)
+                line.new(bar_index - 3, mMid, bar_index + 3, mMid, color=mCloseCol, width=2)
+                if showTradePath
+                    line.new(mBarIdx, mEnt, bar_index, mMid,
+                         color=color.new(mCloseCol, 60), width=1, style=line.style_dashed)
+                array.remove(tIsBuy, si), array.remove(tEntry, si), array.remove(tSL, si), array.remove(tTP, si)
+                array.remove(tBarIdx, si), array.remove(tOneR, si), array.remove(tTradeRR, si)
+                array.remove(tIs2nd, si), array.remove(tOriginTime, si)
+                array.remove(tBoxTop, si), array.remove(tBoxBot, si), array.remove(tMidP_arr, si), array.remove(tHas2nd, si)
+                // === OPEN 2ND ORDER at midline ===
                 bool  sIsB = mIsB
                 float sEnt = mMid
                 float sSL  = sIsB ? mBBot : mBTop
