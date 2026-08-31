@@ -3,18 +3,23 @@
 ## Workflow
 
 - ทุกครั้งที่มีการอัปเดทไฟล์ ต้อง commit, push, และสร้าง Pull Request เพื่อ merge เข้า `main` เสมอ
-- ไฟล์หลัก: `DowTheory_Trend_V1.0.pine` (TradingView Pine Script v6)
+- ไฟล์หลัก: `MegaphoneV1.0.pine` (TradingView Pine Script v6)
 
 ## Project Structure
 
-- `DowTheory_Trend_V1.0.mq5` - Expert Advisor สำหรับ MT5 (port จากไฟล์ .pine — logic เดียวกัน)
+- `MegaphoneV1.0.pine` - Broadening Formation / Megaphone Detector (Pine Script v6, **ตรวจจับ + วาดอย่างเดียว ไม่มีสัญญาณเทรด**)
+  - Swing High/Low detection (Fractal) + label HH/HL/LH/LL
+  - Megaphone = ยอดทำ HH ต่อเนื่อง (rising steps ≥ `inpMinRise`) + ก้นทำ LL ต่อเนื่อง (falling steps ≥ `inpMinFall`) พร้อมกัน = กรอบถ่างออก; นับ trailing run จาก array swing (จากใหม่→เก่า, break เมื่อเจอ step ที่ไม่ต่อเนื่อง — LH ทำ rise=0, HL ทำ fall=0)
+  - State machine: pattern ใหม่ก่อตัว → วาดเส้นขอบบน (ผ่านยอด, ชันขึ้น) + ขอบล่าง (ผ่านก้น, ชันลง) + กล่องครอบ + label `◀ MEGAPHONE ▶`; ยังถ่างต่อ → ยืดขอบตาม; หยุดถ่าง (เจอ LH/HL) → freeze เส้นคาไว้ (เห็นในอดีตว่าเคยเกิดที่ไหน) แล้วปล่อย handle ให้ pattern ใหม่วาดชุดใหม่
+  - Info panel (มุมขวาบน): สถานะ FORMING/none, rising/falling count เทียบ min, จำนวน swing; alert เมื่อ pattern ใหม่ก่อตัว
+- `DowTheory_Trend_V1.0.mq5` - Expert Advisor สำหรับ MT5 (Frame Break system — คนละระบบกับ Megaphone, เก็บไว้เป็น EA เทรด)
   - เบรค/fill ตรวจแบบ tick-based (รู้ลำดับ intra-bar จริง จึงไม่ต้องมีกฎ "แท่งเบรคห้าม fill" และไม่มีเคสเบรคสองฝั่งพร้อมกัน), pivot/frame confirm แบบ bar-close, spread ใช้ bid/ask จริง (ไม่มี input spread)
   - Warm-up: OnInit ไล่สร้าง swing/frame state จากอดีต (ไม่ส่งออเดอร์ย้อนหลัง — กรอบที่เบรค/fill ไปแล้วในอดีตถือว่า consumed), รับ position เดิมของ EA กลับหลัง restart (adopt by magic + "Reco" ใน comment)
   - Recovery ผ่าน `OnTradeTransaction`: DEAL_ENTRY_OUT + DEAL_REASON_SL + ขาดทุน → เปิด recovery market ทันที (ราคาปัจจุบัน ≈ SL), 1R สืบทอด, ห้ามซ้อน
   - Lot: default คำนวณจาก tick value จริง (`lot = Risk$ / (1R/tickSize×tickValue)`), ปิดได้เพื่อใช้สูตร Pine (`1R × pipValueRatio`); clamp กับ volume min/max/step; กัน SL/TP แคบกว่า stops level
   - วาด: swing labels (HH/HL/LH/LL), เส้นขอบกรอบ (น้ำเงิน/แดง), เส้น pullback (magenta), กล่องกรอบ, trendlines; Info panel + stats (trades/WR/NetR) ผ่าน `Comment()`
   - กันเคส: แท่งพลาดตอน disconnect (ไล่ process ทุกแท่งที่ปิดค้าง), history ไม่ครบ (iHigh=0), partial fill (DONE_PARTIAL), filling mode ตาม symbol
-- `DowTheory_Trend_V1.0.pine` - Dow Theory Trend indicator (Pine Script v6)
+### Frame Break trading model (โมเดลเทรดของ `.mq5` EA — เดิมเป็น Pine indicator, ตอนนี้ .pine ถูกแทนด้วย Megaphone แล้ว)
   - Swing High/Low detection (Fractal method)
   - Trendline drawing (Uptrend/Downtrend)
   - HH/HL/LH/LL labels

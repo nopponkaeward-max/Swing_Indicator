@@ -1,0 +1,202 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Megaphone / Broadening Formation Detector
+// อินดี้ตรวจจับรูปแบบ Broadening Formation (Megaphone / ปากแตร) + วาดกรอบและเส้นขอบ
+// 1. หา Swing High/Low อัตโนมัติ (Fractal) + label HH/HL/LH/LL
+// 2. ตรวจ Megaphone: ยอดทำ Higher High ต่อเนื่อง + ก้นทำ Lower Low ต่อเนื่อง (กรอบถ่างออก)
+// 3. วาด: เส้นขอบบน (ผ่านยอด, ชันขึ้น) + เส้นขอบล่าง (ผ่านก้น, ชันลง) + กล่องครอบ + label
+//    รูปแบบเก่าถูก freeze คาไว้ (เห็นว่าเคยเกิดที่ไหนบ้าง), รูปแบบใหม่วาดเส้นชุดใหม่
+// *** ตรวจจับ + วาดอย่างเดียว — ไม่มีสัญญาณเทรด ***
+
+//@version=6
+indicator("Megaphone / Broadening Formation", overlay=true, max_lines_count=500, max_labels_count=500, max_boxes_count=500)
+
+// === Inputs ===
+inpLeftRight   = input.int(3, "Swing Left/Right Bars (Fractal)", minval=1, maxval=20)
+inpLookback    = input.int(300, "Lookback Bars (swing buffer)", minval=50, maxval=1000)
+inpShowLabels  = input.bool(true, "Show HH/HL/LH/LL Labels")
+inpShowPanel   = input.bool(true, "Show Info Panel")
+
+// --- Megaphone detection ---
+inpMinRise     = input.int(2, "Min Ascending Highs (rising steps)", minval=1, maxval=6, group="Megaphone",
+     tooltip="จำนวนขั้นที่ยอดต้องสูงขึ้นต่อเนื่อง\n2 = ยอด 3 จุดเรียงสูงขึ้น (H1<H2<H3)\nยิ่งมากยิ่งเข้ม (pattern ชัด แต่พบน้อย)")
+inpMinFall     = input.int(2, "Min Descending Lows (falling steps)", minval=1, maxval=6, group="Megaphone",
+     tooltip="จำนวนขั้นที่ก้นต้องต่ำลงต่อเนื่อง\n2 = ก้น 3 จุดเรียงต่ำลง (L1>L2>L3)")
+inpShowTrend   = input.bool(true, "Show Boundary Trendlines", group="Megaphone")
+inpShowBox     = input.bool(true, "Show Bounding Box", group="Megaphone")
+inpUpColor     = input.color(color.lime, "Upper Boundary Color", group="Megaphone")
+inpDownColor   = input.color(color.red, "Lower Boundary Color", group="Megaphone")
+inpBoxColor    = input.color(color.orange, "Box / Label Color", group="Megaphone")
+inpAlertOn     = input.bool(true, "Alert on New Megaphone", group="Megaphone")
+
+// === Swing Detection (Fractal) ===
+isSwingHigh = ta.pivothigh(high, inpLeftRight, inpLeftRight)
+isSwingLow  = ta.pivotlow(low, inpLeftRight, inpLeftRight)
+
+// === Collect Swing Highs & Lows (chronological: เก่า -> ใหม่) ===
+var float[] swingHighPrices = array.new_float()
+var int[]   swingHighBars   = array.new_int()
+var float[] swingLowPrices  = array.new_float()
+var int[]   swingLowBars    = array.new_int()
+
+swingOffset = inpLeftRight
+
+if not na(isSwingHigh)
+    array.push(swingHighPrices, isSwingHigh)
+    array.push(swingHighBars, bar_index - swingOffset)
+    if array.size(swingHighPrices) > inpLookback
+        array.shift(swingHighPrices)
+        array.shift(swingHighBars)
+
+if not na(isSwingLow)
+    array.push(swingLowPrices, isSwingLow)
+    array.push(swingLowBars, bar_index - swingOffset)
+    if array.size(swingLowPrices) > inpLookback
+        array.shift(swingLowPrices)
+        array.shift(swingLowBars)
+
+hCount = array.size(swingHighPrices)
+lCount = array.size(swingLowPrices)
+
+// === Swing Labels (HH/HL/LH/LL) ===
+if inpShowLabels and not na(isSwingHigh) and hCount >= 2
+    bool isHH = array.get(swingHighPrices, hCount - 1) > array.get(swingHighPrices, hCount - 2)
+    label.new(bar_index - swingOffset, isSwingHigh,
+         text=isHH ? "HH" : "LH", style=label.style_label_down,
+         color=color.new(color.white, 100), textcolor=isHH ? inpUpColor : inpDownColor, size=size.small)
+
+if inpShowLabels and not na(isSwingLow) and lCount >= 2
+    bool isHL = array.get(swingLowPrices, lCount - 1) > array.get(swingLowPrices, lCount - 2)
+    label.new(bar_index - swingOffset, isSwingLow,
+         text=isHL ? "HL" : "LL", style=label.style_label_up,
+         color=color.new(color.white, 100), textcolor=isHL ? inpUpColor : inpDownColor, size=size.small)
+
+// === Megaphone / Broadening detection ===
+// นับจำนวนขั้น "สูงขึ้นต่อเนื่อง" ของ swing highs ล่าสุด (จากใหม่ไปเก่า)
+f_countRising() =>
+    int n = array.size(swingHighPrices)
+    int cnt = 0
+    if n >= 2
+        for i = n - 1 to 1
+            if array.get(swingHighPrices, i) > array.get(swingHighPrices, i - 1)
+                cnt += 1
+            else
+                break
+    cnt
+
+// นับจำนวนขั้น "ต่ำลงต่อเนื่อง" ของ swing lows ล่าสุด
+f_countFalling() =>
+    int m = array.size(swingLowPrices)
+    int cnt = 0
+    if m >= 2
+        for i = m - 1 to 1
+            if array.get(swingLowPrices, i) < array.get(swingLowPrices, i - 1)
+                cnt += 1
+            else
+                break
+    cnt
+
+// --- Megaphone state ---
+var bool  megaActive   = false
+var line  megaUp       = na    // เส้นขอบบน
+var line  megaDn       = na    // เส้นขอบล่าง
+var box   megaBox      = na    // กล่องครอบ
+var int   megaStartBar = na
+var int   curRise      = 0
+var int   curFall      = 0
+
+// ประมวลผลเมื่อมี pivot ใหม่ confirm (แท่งปิดแล้ว)
+bool newPivot = (not na(isSwingHigh)) or (not na(isSwingLow))
+bool newMega  = false   // true เฉพาะแท่งที่ Megaphone ใหม่ก่อตัว (สำหรับ alert)
+if barstate.isconfirmed and newPivot
+    int rise = f_countRising()
+    int fall = f_countFalling()
+    curRise := rise
+    curFall := fall
+    bool isMega = hCount >= inpMinRise + 1 and lCount >= inpMinFall + 1 and rise >= inpMinRise and fall >= inpMinFall
+
+    if isMega
+        // จุดขอบ: ต้นและปลายของ run ที่ถ่างออก
+        int upFromIdx = hCount - 1 - rise
+        int upToIdx   = hCount - 1
+        int loFromIdx = lCount - 1 - fall
+        int loToIdx   = lCount - 1
+        float upFromP = array.get(swingHighPrices, upFromIdx)
+        int   upFromB = array.get(swingHighBars,   upFromIdx)
+        float upToP   = array.get(swingHighPrices, upToIdx)
+        int   upToB   = array.get(swingHighBars,   upToIdx)
+        float loFromP = array.get(swingLowPrices,  loFromIdx)
+        int   loFromB = array.get(swingLowBars,    loFromIdx)
+        float loToP   = array.get(swingLowPrices,  loToIdx)
+        int   loToB   = array.get(swingLowBars,    loToIdx)
+
+        int   boxLeft   = math.min(upFromB, loFromB)
+        int   boxRight  = math.max(upToB, loToB)
+        float boxTop    = math.max(upToP, upFromP)
+        float boxBottom = math.min(loToP, loFromP)
+
+        if not megaActive
+            // Megaphone ใหม่ก่อตัว -> วาดชุดใหม่ (ชุดเก่าถูก freeze คาไว้แล้ว)
+            megaActive := true
+            newMega := true
+            megaStartBar := boxLeft
+            if inpShowTrend
+                megaUp := line.new(upFromB, upFromP, upToB, upToP,
+                     color=inpUpColor, width=2, extend=extend.right)
+                megaDn := line.new(loFromB, loFromP, loToB, loToP,
+                     color=inpDownColor, width=2, extend=extend.right)
+            if inpShowBox
+                megaBox := box.new(boxLeft, boxTop, boxRight, boxBottom,
+                     bgcolor=color.new(inpBoxColor, 92),
+                     border_color=color.new(inpBoxColor, 45),
+                     border_width=1, border_style=line.style_dotted)
+            label.new(megaStartBar, boxTop, text="◀ MEGAPHONE ▶",
+                 style=label.style_label_down, color=color.new(inpBoxColor, 20),
+                 textcolor=color.white, size=size.small)
+        else
+            // Megaphone เดิมยังถ่างต่อ -> อัปเดตขอบให้ยืดตาม
+            if not na(megaUp)
+                line.set_xy1(megaUp, upFromB, upFromP)
+                line.set_xy2(megaUp, upToB, upToP)
+            if not na(megaDn)
+                line.set_xy1(megaDn, loFromB, loFromP)
+                line.set_xy2(megaDn, loToB, loToP)
+            if not na(megaBox)
+                box.set_lefttop(megaBox, boxLeft, boxTop)
+                box.set_rightbottom(megaBox, boxRight, boxBottom)
+    else
+        // หยุดถ่าง (เจอ LH หรือ HL) -> ปิด Megaphone: freeze เส้นคาไว้ ปล่อยให้เห็นในอดีต
+        if megaActive
+            megaActive := false
+            if not na(megaUp)
+                line.set_extend(megaUp, extend.none)
+            if not na(megaDn)
+                line.set_extend(megaDn, extend.none)
+            megaUp  := na
+            megaDn  := na
+            megaBox := na
+
+// แจ้งเตือนเมื่อ Megaphone ใหม่ก่อตัว
+if inpAlertOn and newMega
+    alert("Megaphone / Broadening Formation detected", alert.freq_once_per_bar)
+
+// === Info Panel ===
+if inpShowPanel and barstate.islast
+    var table panel = table.new(position.top_right, 2, 5, bgcolor=color.new(color.black, 70), border_width=1)
+    table.cell(panel, 0, 0, "Megaphone", text_color=inpBoxColor, text_size=size.normal, text_halign=text.align_left)
+    table.cell(panel, 1, 0, megaActive ? "● FORMING" : "— none —",
+         text_color=megaActive ? inpBoxColor : color.gray, text_size=size.normal, text_halign=text.align_left)
+    table.cell(panel, 0, 1, "Rising Highs", text_color=color.white, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 1, 1, str.tostring(curRise) + " / " + str.tostring(inpMinRise),
+         text_color=curRise >= inpMinRise ? inpUpColor : color.gray, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 0, 2, "Falling Lows", text_color=color.white, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 1, 2, str.tostring(curFall) + " / " + str.tostring(inpMinFall),
+         text_color=curFall >= inpMinFall ? inpDownColor : color.gray, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 0, 3, "Swings H/L", text_color=color.gray, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 1, 3, str.tostring(hCount) + " / " + str.tostring(lCount),
+         text_color=color.gray, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 0, 4, "Pattern", text_color=color.aqua, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 1, 4, "Broadening (detect only)", text_color=color.aqua, text_size=size.small, text_halign=text.align_left)
+
+// === Alert condition (สำหรับตั้ง alert dialog) ===
+alertcondition(newMega, title="Megaphone Detected",
+     message="Megaphone / Broadening Formation detected")
