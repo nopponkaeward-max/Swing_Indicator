@@ -1,10 +1,10 @@
 // This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
 // © Megaphone / Broadening Formation Detector
-// อินดี้ตรวจจับรูปแบบ Broadening Formation (Megaphone / ปากแตร) + วาดกรอบและเส้นขอบ
+// อินดี้ตรวจจับรูปแบบ Broadening Formation (Megaphone / ปากแตร) + Swing Sequence Pattern
 // 1. หา Swing High/Low อัตโนมัติ (Fractal) + label HH/HL/LH/LL
 // 2. ตรวจ Megaphone: ยอดทำ Higher High ต่อเนื่อง + ก้นทำ Lower Low ต่อเนื่อง (กรอบถ่างออก)
-// 3. วาด: เส้นขอบบน (ผ่านยอด, ชันขึ้น) + เส้นขอบล่าง (ผ่านก้น, ชันลง) + กล่องครอบ + label
-//    รูปแบบเก่าถูก freeze คาไว้ (เห็นว่าเคยเกิดที่ไหนบ้าง), รูปแบบใหม่วาดเส้นชุดใหม่
+// 3. ตรวจ Sequence Pattern: HH-HL-HH-LL-HH-LL (swing เรียงตามรูปแบบเฉพาะ)
+// 4. วาด: เส้นขอบ + กล่องครอบ + label; รูปแบบเก่า freeze คาไว้, รูปแบบใหม่วาดชุดใหม่
 // *** ตรวจจับ + วาดอย่างเดียว — ไม่มีสัญญาณเทรด ***
 
 //@version=6
@@ -28,6 +28,14 @@ inpDownColor   = input.color(color.red, "Lower Boundary Color", group="Megaphone
 inpBoxColor    = input.color(color.orange, "Box / Label Color", group="Megaphone")
 inpAlertOn     = input.bool(true, "Alert on New Megaphone", group="Megaphone")
 
+// --- Sequence Pattern Detection (HH-HL-HH-LL-HH-LL) ---
+inpSeqTrend    = input.bool(true, "Show Boundary Trendlines", group="Sequence Pattern")
+inpSeqBox      = input.bool(true, "Show Bounding Box", group="Sequence Pattern")
+inpSeqUpColor  = input.color(color.teal, "Upper Boundary Color", group="Sequence Pattern")
+inpSeqDnColor  = input.color(color.maroon, "Lower Boundary Color", group="Sequence Pattern")
+inpSeqBoxColor = input.color(color.yellow, "Box / Label Color", group="Sequence Pattern")
+inpAlertSeqPat = input.bool(true, "Alert on Sequence Pattern", group="Sequence Pattern")
+
 // === Swing Detection (Fractal) ===
 isSwingHigh = ta.pivothigh(high, inpLeftRight, inpLeftRight)
 isSwingLow  = ta.pivotlow(low, inpLeftRight, inpLeftRight)
@@ -37,6 +45,9 @@ var float[] swingHighPrices = array.new_float()
 var int[]   swingHighBars   = array.new_int()
 var float[] swingLowPrices  = array.new_float()
 var int[]   swingLowBars    = array.new_int()
+var string[] seqLabels      = array.new_string()
+var int[]    seqBars        = array.new_int()
+var float[]  seqPrices      = array.new_float()
 
 swingOffset = inpLeftRight
 
@@ -70,8 +81,31 @@ if inpShowLabels and not na(isSwingLow) and lCount >= 2
          text=isHL ? "HL" : "LL", style=label.style_label_up,
          color=color.new(color.white, 100), textcolor=isHL ? inpUpColor : inpDownColor, size=size.small)
 
+// === Unified Swing Sequence (chronological, for pattern detection) ===
+bool seqUpdated = false
+if not na(isSwingHigh) and hCount >= 2
+    string _hl = array.get(swingHighPrices, hCount - 1) > array.get(swingHighPrices, hCount - 2) ? "HH" : "LH"
+    array.push(seqLabels, _hl)
+    array.push(seqBars, bar_index - swingOffset)
+    array.push(seqPrices, isSwingHigh)
+    if array.size(seqLabels) > inpLookback
+        array.shift(seqLabels)
+        array.shift(seqBars)
+        array.shift(seqPrices)
+    seqUpdated := true
+
+if not na(isSwingLow) and lCount >= 2
+    string _ll = array.get(swingLowPrices, lCount - 1) > array.get(swingLowPrices, lCount - 2) ? "HL" : "LL"
+    array.push(seqLabels, _ll)
+    array.push(seqBars, bar_index - swingOffset)
+    array.push(seqPrices, isSwingLow)
+    if array.size(seqLabels) > inpLookback
+        array.shift(seqLabels)
+        array.shift(seqBars)
+        array.shift(seqPrices)
+    seqUpdated := true
+
 // === Megaphone / Broadening detection ===
-// นับจำนวนขั้น "สูงขึ้นต่อเนื่อง" ของ swing highs ล่าสุด (จากใหม่ไปเก่า)
 f_countRising() =>
     int n = array.size(swingHighPrices)
     int cnt = 0
@@ -83,7 +117,6 @@ f_countRising() =>
                 break
     cnt
 
-// นับจำนวนขั้น "ต่ำลงต่อเนื่อง" ของ swing lows ล่าสุด
 f_countFalling() =>
     int m = array.size(swingLowPrices)
     int cnt = 0
@@ -97,16 +130,15 @@ f_countFalling() =>
 
 // --- Megaphone state ---
 var bool  megaActive   = false
-var line  megaUp       = na    // เส้นขอบบน
-var line  megaDn       = na    // เส้นขอบล่าง
-var box   megaBox      = na    // กล่องครอบ
+var line  megaUp       = na
+var line  megaDn       = na
+var box   megaBox      = na
 var int   megaStartBar = na
 var int   curRise      = 0
 var int   curFall      = 0
 
-// ประมวลผลเมื่อมี pivot ใหม่ confirm (แท่งปิดแล้ว)
 bool newPivot = (not na(isSwingHigh)) or (not na(isSwingLow))
-bool newMega  = false   // true เฉพาะแท่งที่ Megaphone ใหม่ก่อตัว (สำหรับ alert)
+bool newMega  = false
 if barstate.isconfirmed and newPivot
     int rise = f_countRising()
     int fall = f_countFalling()
@@ -115,7 +147,6 @@ if barstate.isconfirmed and newPivot
     bool isMega = hCount >= inpMinRise + 1 and lCount >= inpMinFall + 1 and rise >= inpMinRise and fall >= inpMinFall
 
     if isMega
-        // จุดขอบ: ต้นและปลายของ run ที่ถ่างออก
         int upFromIdx = hCount - 1 - rise
         int upToIdx   = hCount - 1
         int loFromIdx = lCount - 1 - fall
@@ -135,7 +166,6 @@ if barstate.isconfirmed and newPivot
         float boxBottom = math.min(loToP, loFromP)
 
         if not megaActive
-            // Megaphone ใหม่ก่อตัว -> วาดชุดใหม่ (ชุดเก่าถูก freeze คาไว้แล้ว)
             megaActive := true
             newMega := true
             megaStartBar := boxLeft
@@ -153,7 +183,6 @@ if barstate.isconfirmed and newPivot
                  style=label.style_label_down, color=color.new(inpBoxColor, 20),
                  textcolor=color.white, size=size.small)
         else
-            // Megaphone เดิมยังถ่างต่อ -> อัปเดตขอบให้ยืดตาม
             if not na(megaUp)
                 line.set_xy1(megaUp, upFromB, upFromP)
                 line.set_xy2(megaUp, upToB, upToP)
@@ -164,7 +193,6 @@ if barstate.isconfirmed and newPivot
                 box.set_lefttop(megaBox, boxLeft, boxTop)
                 box.set_rightbottom(megaBox, boxRight, boxBottom)
     else
-        // หยุดถ่าง (เจอ LH หรือ HL) -> ปิด Megaphone: freeze เส้นคาไว้ ปล่อยให้เห็นในอดีต
         if megaActive
             megaActive := false
             if not na(megaUp)
@@ -175,13 +203,87 @@ if barstate.isconfirmed and newPivot
             megaDn  := na
             megaBox := na
 
-// แจ้งเตือนเมื่อ Megaphone ใหม่ก่อตัว
 if inpAlertOn and newMega
     alert("Megaphone / Broadening Formation detected", alert.freq_once_per_bar)
 
+// === Sequence Pattern Detection (HH-HL-HH-LL-HH-LL) ===
+// ตรวจจับ 6 swing ล่าสุดตามลำดับเวลา: HH(high) → HL(low) → HH(high) → LL(low) → HH(high) → LL(low)
+// ยอดทำ HH ขึ้นเรื่อยๆ 3 จุด ขณะที่ก้นเปลี่ยนจาก HL → LL → LL (เริ่มหลุด = กรอบถ่างออก)
+var bool  seqActive  = false
+var line  seqUpLine  = na
+var line  seqDnLine  = na
+var box   seqBoxObj  = na
+bool newSeqPat = false
+
+if barstate.isconfirmed and seqUpdated
+    int sLen = array.size(seqLabels)
+    bool isSeqMatch = false
+    if sLen >= 6
+        isSeqMatch := array.get(seqLabels, sLen - 6) == "HH" and
+             array.get(seqLabels, sLen - 5) == "HL" and
+             array.get(seqLabels, sLen - 4) == "HH" and
+             array.get(seqLabels, sLen - 3) == "LL" and
+             array.get(seqLabels, sLen - 2) == "HH" and
+             array.get(seqLabels, sLen - 1) == "LL"
+
+    if isSeqMatch
+        int   b0 = array.get(seqBars, sLen - 6)
+        float p0 = array.get(seqPrices, sLen - 6)
+        int   b1 = array.get(seqBars, sLen - 5)
+        float p1 = array.get(seqPrices, sLen - 5)
+        int   b4 = array.get(seqBars, sLen - 2)
+        float p4 = array.get(seqPrices, sLen - 2)
+        int   b5 = array.get(seqBars, sLen - 1)
+        float p5 = array.get(seqPrices, sLen - 1)
+
+        float boxTop = math.max(p0, math.max(array.get(seqPrices, sLen - 4), p4))
+        float boxBot = math.min(p1, math.min(array.get(seqPrices, sLen - 3), p5))
+        int   boxL   = math.min(b0, b1)
+        int   boxR   = math.max(b4, b5)
+
+        if not seqActive
+            seqActive := true
+            newSeqPat := true
+            if inpSeqTrend
+                seqUpLine := line.new(b0, p0, b4, p4,
+                     color=inpSeqUpColor, width=2, extend=extend.right)
+                seqDnLine := line.new(b1, p1, b5, p5,
+                     color=inpSeqDnColor, width=2, extend=extend.right)
+            if inpSeqBox
+                seqBoxObj := box.new(boxL, boxTop, boxR, boxBot,
+                     bgcolor=color.new(inpSeqBoxColor, 92),
+                     border_color=color.new(inpSeqBoxColor, 45),
+                     border_width=1, border_style=line.style_dotted)
+            label.new(boxL, boxTop, text="◀ HH-HL-HH-LL-HH-LL ▶",
+                 style=label.style_label_down, color=color.new(inpSeqBoxColor, 20),
+                 textcolor=color.white, size=size.small)
+        else
+            if not na(seqUpLine)
+                line.set_xy1(seqUpLine, b0, p0)
+                line.set_xy2(seqUpLine, b4, p4)
+            if not na(seqDnLine)
+                line.set_xy1(seqDnLine, b1, p1)
+                line.set_xy2(seqDnLine, b5, p5)
+            if not na(seqBoxObj)
+                box.set_lefttop(seqBoxObj, boxL, boxTop)
+                box.set_rightbottom(seqBoxObj, boxR, boxBot)
+    else
+        if seqActive
+            seqActive := false
+            if not na(seqUpLine)
+                line.set_extend(seqUpLine, extend.none)
+            if not na(seqDnLine)
+                line.set_extend(seqDnLine, extend.none)
+            seqUpLine := na
+            seqDnLine := na
+            seqBoxObj := na
+
+if inpAlertSeqPat and newSeqPat
+    alert("Sequence Pattern HH-HL-HH-LL-HH-LL detected", alert.freq_once_per_bar)
+
 // === Info Panel ===
 if inpShowPanel and barstate.islast
-    var table panel = table.new(position.top_right, 2, 5, bgcolor=color.new(color.black, 70), border_width=1)
+    var table panel = table.new(position.top_right, 2, 7, bgcolor=color.new(color.black, 70), border_width=1)
     table.cell(panel, 0, 0, "Megaphone", text_color=inpBoxColor, text_size=size.normal, text_halign=text.align_left)
     table.cell(panel, 1, 0, megaActive ? "● FORMING" : "— none —",
          text_color=megaActive ? inpBoxColor : color.gray, text_size=size.normal, text_halign=text.align_left)
@@ -196,7 +298,15 @@ if inpShowPanel and barstate.islast
          text_color=color.gray, text_size=size.small, text_halign=text.align_left)
     table.cell(panel, 0, 4, "Pattern", text_color=color.aqua, text_size=size.small, text_halign=text.align_left)
     table.cell(panel, 1, 4, "Broadening (detect only)", text_color=color.aqua, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 0, 5, "Seq Pattern", text_color=inpSeqBoxColor, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 1, 5, seqActive ? "● MATCH" : "— none —",
+         text_color=seqActive ? inpSeqBoxColor : color.gray, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 0, 6, "Sequence", text_color=color.gray, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 1, 6, "HH-HL-HH-LL-HH-LL", text_color=color.gray, text_size=size.small, text_halign=text.align_left)
 
-// === Alert condition (สำหรับตั้ง alert dialog) ===
+// === Alert conditions (สำหรับตั้ง alert dialog) ===
 alertcondition(newMega, title="Megaphone Detected",
      message="Megaphone / Broadening Formation detected")
+
+alertcondition(newSeqPat, title="Sequence Pattern Detected",
+     message="Sequence Pattern HH-HL-HH-LL-HH-LL detected")

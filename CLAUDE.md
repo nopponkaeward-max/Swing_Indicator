@@ -11,7 +11,8 @@
   - Swing High/Low detection (Fractal) + label HH/HL/LH/LL
   - Megaphone = ยอดทำ HH ต่อเนื่อง (rising steps ≥ `inpMinRise`) + ก้นทำ LL ต่อเนื่อง (falling steps ≥ `inpMinFall`) พร้อมกัน = กรอบถ่างออก; นับ trailing run จาก array swing (จากใหม่→เก่า, break เมื่อเจอ step ที่ไม่ต่อเนื่อง — LH ทำ rise=0, HL ทำ fall=0)
   - State machine: pattern ใหม่ก่อตัว → วาดเส้นขอบบน (ผ่านยอด, ชันขึ้น) + ขอบล่าง (ผ่านก้น, ชันลง) + กล่องครอบ + label `◀ MEGAPHONE ▶`; ยังถ่างต่อ → ยืดขอบตาม; หยุดถ่าง (เจอ LH/HL) → freeze เส้นคาไว้ (เห็นในอดีตว่าเคยเกิดที่ไหน) แล้วปล่อย handle ให้ pattern ใหม่วาดชุดใหม่
-  - Info panel (มุมขวาบน): สถานะ FORMING/none, rising/falling count เทียบ min, จำนวน swing; alert เมื่อ pattern ใหม่ก่อตัว
+  - Sequence Pattern Detection (HH-HL-HH-LL-HH-LL): สร้าง unified swing sequence ตามลำดับเวลา แล้วเช็คว่า 6 swing ล่าสุดตรงกับ pattern หรือไม่; ยอดทำ HH 3 จุดขึ้นเรื่อยๆ ขณะที่ก้นเปลี่ยนจาก HL → LL → LL (เริ่มหลุด = กรอบถ่างออก); State machine เหมือน Megaphone: match → วาดเส้นขอบบน (ผ่าน HH แรก→สุดท้าย) + ขอบล่าง (ผ่าน low แรก→สุดท้าย) + กล่อง + label `◀ HH-HL-HH-LL-HH-LL ▶`; ไม่ match → freeze คาไว้
+  - Info panel (มุมขวาบน): สถานะ Megaphone FORMING/none, Seq Pattern MATCH/none, rising/falling count เทียบ min, จำนวน swing; alert เมื่อ pattern ใหม่ก่อตัว
 - `DowTheory_Trend_V1.0.mq5` - Expert Advisor สำหรับ MT5 (Frame Break system — คนละระบบกับ Megaphone, เก็บไว้เป็น EA เทรด)
   - เบรค/fill ตรวจแบบ tick-based (รู้ลำดับ intra-bar จริง จึงไม่ต้องมีกฎ "แท่งเบรคห้าม fill" และไม่มีเคสเบรคสองฝั่งพร้อมกัน), pivot/frame confirm แบบ bar-close, spread ใช้ bid/ask จริง (ไม่มี input spread)
   - Warm-up: OnInit ไล่สร้าง swing/frame state จากอดีต (ไม่ส่งออเดอร์ย้อนหลัง — กรอบที่เบรค/fill ไปแล้วในอดีตถือว่า consumed), รับ position เดิมของ EA กลับหลัง restart (adopt by magic + "Reco" ใน comment)
