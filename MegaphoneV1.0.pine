@@ -41,6 +41,8 @@ rrRatio        = input.float(5.0, "R:R Ratio", minval=0.1, step=0.1, group="Brea
 pipValueRatio  = input.float(100.0, "1 Lot Ratio", group="Breakout Trading")
 spreadPts      = input.float(0, "Spread (price)", minval=0, step=0.0001, group="Breakout Trading",
      tooltip="BUY: entry = ขอบกรอบ + spread\nSELL: entry = ขอบกรอบ - spread")
+inpPlanExpiry  = input.int(100, "Plan Expiry (bars, 0=ไม่หมดอายุ)", minval=0, group="Breakout Trading",
+     tooltip="ยกเลิก plan อัตโนมัติถ้าราคาไม่เบรคกรอบภายใน N แท่งหลัง pattern จบ\nกันออเดอร์ผีที่เกิดไกลจากกล่อง")
 
 // --- 2nd Order ---
 use2ndOrder    = input.bool(false, "Enable 2nd Order (pullback ถึง midline)", group="2nd Order",
@@ -207,6 +209,7 @@ var line  megaUp       = na
 var line  megaDn       = na
 var line  megaMid      = na
 var box   megaBox      = na
+var box   armedBox     = na
 var int   megaStartBar = na
 var int   curRise      = 0
 var int   curFall      = 0
@@ -217,7 +220,7 @@ var float curRange     = na
 
 bool newPivot      = (not na(isSwingHigh)) or (not na(isSwingLow))
 bool newMega       = false
-bool megaBoxChanged = false
+bool megaFrozen    = false
 
 if barstate.isconfirmed and newPivot
     int rise = f_countRising()
@@ -273,7 +276,6 @@ if barstate.isconfirmed and newPivot
                  style=label.style_label_down, color=color.new(boxCol, 20),
                  textcolor=color.white, size=size.small)
         else
-            megaBoxChanged := true
             if not na(megaUp)
                 line.set_xy1(megaUp, upFromB, upFromP)
                 line.set_xy2(megaUp, upToB, upToP)
@@ -291,12 +293,14 @@ if barstate.isconfirmed and newPivot
     else
         if megaActive
             megaActive := false
+            megaFrozen := true
             if not na(megaUp)
                 line.set_extend(megaUp, extend.none)
             if not na(megaDn)
                 line.set_extend(megaDn, extend.none)
             if not na(megaMid)
                 line.set_extend(megaMid, extend.none)
+            armedBox := megaBox
             megaUp  := na
             megaDn  := na
             megaMid := na
@@ -311,6 +315,11 @@ var line  planBuyLine  = na
 var line  planSellLine = na
 var label planBuyLabel = na
 var label planSellLabel = na
+var float planTop      = na
+var float planBot      = na
+var float planMid      = na
+var float planRange    = na
+var int   armBar       = na
 
 var bool[]  tIsBuy     = array.new_bool()
 var float[] tEntry     = array.new_float()
@@ -371,6 +380,7 @@ if newMega
         label.delete(planBuyLabel)
         label.delete(planSellLabel)
         hasPlan := false
+    armedBox := na
     if array.size(tEntry) > 0
         int ci = array.size(tEntry) - 1
         while ci >= 0
@@ -405,67 +415,65 @@ if newMega
                 array.remove(tIs2nd, ci), array.remove(tOriginTime, ci)
                 array.remove(tBoxTop, ci), array.remove(tBoxBot, ci), array.remove(tMidP_arr, ci), array.remove(tHas2nd, ci)
             ci -= 1
-    if f_dayAllowed() and not na(curBoxTop) and not na(curBoxBottom) and curRange > 0
-        hasPlan := true
-        float oneR   = curRange * oneRPct
-        float bEntry = curBoxTop + spreadPts
-        float bSL    = bEntry - oneR
-        float bTP    = bEntry + oneR * rrRatio
+// --- Arm plan when megaphone freezes (pattern จบ กรอบสุดท้ายนิ่งแล้ว) ---
+if megaFrozen
+    bool priceInside = close < curBoxTop and close > curBoxBottom
+    if f_dayAllowed() and not na(curBoxTop) and not na(curBoxBottom) and curRange > 0 and priceInside
+        hasPlan   := true
+        planTop   := curBoxTop
+        planBot   := curBoxBottom
+        planMid   := curMidP
+        planRange := curRange
+        armBar    := bar_index
+        float oneR   = planRange * oneRPct
+        float bTP    = planTop + spreadPts + oneR * rrRatio
+        float sTP    = planBot - spreadPts - oneR * rrRatio
         float bLot   = oneR > 0 ? riskAmount / (oneR * pipValueRatio) : 0
-        float sEntry = curBoxBottom - spreadPts
-        float sSL    = sEntry + oneR
-        float sTP    = sEntry - oneR * rrRatio
-        float sLot   = bLot
-        planBuyLine  := line.new(bar_index, curBoxTop, bar_index + 10, curBoxTop, color=color.blue, width=2, style=line.style_dashed)
-        planSellLine := line.new(bar_index, curBoxBottom, bar_index + 10, curBoxBottom, color=color.blue, width=2, style=line.style_dashed)
-        string bTxt = "PLAN BUY (Megaphone)\nSize: " + str.tostring(bLot, "#.##") + " Lots\nR:R: 1:" + str.tostring(rrRatio, "#.#")
-        string sTxt = "PLAN SELL (Megaphone)\nSize: " + str.tostring(sLot, "#.##") + " Lots\nR:R: 1:" + str.tostring(rrRatio, "#.#")
+        planBuyLine  := line.new(bar_index, planTop, bar_index + 3, planTop, color=color.blue, width=2, style=line.style_dashed)
+        planSellLine := line.new(bar_index, planBot, bar_index + 3, planBot, color=color.blue, width=2, style=line.style_dashed)
+        string bTxt = "PLAN BUY (Break ▲)\nSize: " + str.tostring(bLot, "#.##") + " Lots\nR:R: 1:" + str.tostring(rrRatio, "#.#")
+        string sTxt = "PLAN SELL (Break ▼)\nSize: " + str.tostring(bLot, "#.##") + " Lots\nR:R: 1:" + str.tostring(rrRatio, "#.#")
         planBuyLabel  := label.new(bar_index, bTP, text=bTxt, color=color.new(color.green, 10), textcolor=color.white, style=label.style_label_up, size=size.small)
         planSellLabel := label.new(bar_index, sTP, text=sTxt, color=color.new(color.red, 10), textcolor=color.white, style=label.style_label_down, size=size.small)
+    else
+        armedBox := na
 
-// --- Update plans when megaphone box changes ---
-if megaBoxChanged and hasPlan and not na(curBoxTop) and curRange > 0
-    float oneR   = curRange * oneRPct
-    float bEntry = curBoxTop + spreadPts
-    float bTP    = bEntry + oneR * rrRatio
-    float bLot   = oneR > 0 ? riskAmount / (oneR * pipValueRatio) : 0
-    float sEntry = curBoxBottom - spreadPts
-    float sTP    = sEntry - oneR * rrRatio
-    if not na(planBuyLine)
-        line.set_y1(planBuyLine, curBoxTop)
-        line.set_y2(planBuyLine, curBoxTop)
-    if not na(planSellLine)
-        line.set_y1(planSellLine, curBoxBottom)
-        line.set_y2(planSellLine, curBoxBottom)
-    if not na(planBuyLabel)
-        label.set_y(planBuyLabel, bTP)
-        label.set_text(planBuyLabel, "PLAN BUY (Megaphone)\nSize: " + str.tostring(bLot, "#.##") + " Lots\nR:R: 1:" + str.tostring(rrRatio, "#.#"))
-    if not na(planSellLabel)
-        label.set_y(planSellLabel, sTP)
-        label.set_text(planSellLabel, "PLAN SELL (Megaphone)\nSize: " + str.tostring(bLot, "#.##") + " Lots\nR:R: 1:" + str.tostring(rrRatio, "#.#"))
+// --- Plan expiry (กันออเดอร์ผีไกลจากกล่อง) ---
+if barstate.isconfirmed and hasPlan and inpPlanExpiry > 0 and bar_index - armBar >= inpPlanExpiry
+    hasPlan := false
+    line.delete(planBuyLine)
+    line.delete(planSellLine)
+    label.delete(planBuyLabel)
+    label.delete(planSellLabel)
+    label.new(bar_index, planTop, text="PLAN EXPIRED", style=label.style_label_down,
+         color=color.new(color.gray, 40), textcolor=color.white, size=size.tiny)
+    armedBox := na
 
-// --- Extend plan lines to current bar ---
+// --- Extend plan lines + armed box to current bar ---
 if hasPlan
     if not na(planBuyLine)
         line.set_x2(planBuyLine, bar_index + 3)
     if not na(planSellLine)
         line.set_x2(planSellLine, bar_index + 3)
+    if not na(armedBox)
+        box.set_right(armedBox, bar_index)
 
 // ==========================================
 // --- 7. BREAKOUT TRIGGER + ENTRY VISUALS ---
 // ==========================================
 
-if barstate.isconfirmed and hasPlan and not newMega and not na(curBoxTop) and not na(curBoxBottom)
-    bool brkUp = high > curBoxTop
-    bool brkDn = low < curBoxBottom
+if barstate.isconfirmed and hasPlan and not megaFrozen and not na(planTop) and not na(planBot)
+    bool brkUp = high > planTop
+    bool brkDn = low < planBot
     if brkUp and brkDn
         brkUp := close > open
         brkDn := not brkUp
     bool triggered = brkUp or brkDn
     if triggered
         bool actIsB = brkUp
-        float oneR = curRange * oneRPct
-        float ent  = actIsB ? curBoxTop + spreadPts : curBoxBottom - spreadPts
+        float oneR = planRange * oneRPct
+        // gap ข้าม level → fill ที่ open แทนขอบกรอบ
+        float ent  = actIsB ? math.max(planTop, open) + spreadPts : math.min(planBot, open) - spreadPts
         float sl   = actIsB ? ent - oneR : ent + oneR
         float tp   = actIsB ? ent + oneR * rrRatio : ent - oneR * rrRatio
         float lot  = oneR > 0 ? riskAmount / (oneR * pipValueRatio) : 0
@@ -478,9 +486,9 @@ if barstate.isconfirmed and hasPlan and not newMega and not na(curBoxTop) and no
         array.push(tTradeRR, rrRatio)
         array.push(tIs2nd, false)
         array.push(tOriginTime, time)
-        array.push(tBoxTop, curBoxTop)
-        array.push(tBoxBot, curBoxBottom)
-        array.push(tMidP_arr, curMidP)
+        array.push(tBoxTop, planTop)
+        array.push(tBoxBot, planBot)
+        array.push(tMidP_arr, planMid)
         array.push(tHas2nd, false)
         // --- Entry visuals ---
         label.new(bar_index, ent, text="", style=label.style_circle,
@@ -504,12 +512,13 @@ if barstate.isconfirmed and hasPlan and not newMega and not na(curBoxTop) and no
         string infoText = "CONFIRMED " + (actIsB ? "BUY" : "SELL") + "\n(Megaphone)\nSize: " + str.tostring(lot, "#.##") + " Lots"
         label.new(bar_index, ent, text=infoText, color=color.new(color.black, 65), textcolor=color.new(color.white, 20),
              style=actIsB ? label.style_label_up : label.style_label_down, size=size.small)
-        // --- Cancel plan ---
+        // --- Cancel plan (กล่องหยุดยืดที่แท่งเบรค) ---
         hasPlan := false
         line.delete(planBuyLine)
         line.delete(planSellLine)
         label.delete(planBuyLabel)
         label.delete(planSellLabel)
+        armedBox := na
 
 // ==========================================
 // --- 8. 2ND ORDER ---

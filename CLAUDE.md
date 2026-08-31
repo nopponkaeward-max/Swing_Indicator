@@ -7,11 +7,16 @@
 
 ## Project Structure
 
-- `MegaphoneV1.0.pine` - Broadening Formation / Megaphone Detector (Pine Script v6, **ตรวจจับ + วาดอย่างเดียว ไม่มีสัญญาณเทรด**)
+- `MegaphoneV1.0.pine` - Megaphone Breakout Trading System (Pine Script v6, **ตรวจจับ + วาด + เทรดเบรคเอาท์จากกล่อง**)
   - Swing High/Low detection (Fractal) + label HH/HL/LH/LL
-  - Megaphone = ยอดทำ HH ต่อเนื่อง (rising steps ≥ `inpMinRise`) + ก้นทำ LL ต่อเนื่อง (falling steps ≥ `inpMinFall`) พร้อมกัน = กรอบถ่างออก; นับ trailing run จาก array swing (จากใหม่→เก่า, break เมื่อเจอ step ที่ไม่ต่อเนื่อง — LH ทำ rise=0, HL ทำ fall=0)
-  - State machine: pattern ใหม่ก่อตัว → วาดเส้นขอบบน (ผ่านยอด, ชันขึ้น) + ขอบล่าง (ผ่านก้น, ชันลง) + กล่องครอบ + label `◀ MEGAPHONE ▶`; ยังถ่างต่อ → ยืดขอบตาม; หยุดถ่าง (เจอ LH/HL) → freeze เส้นคาไว้ (เห็นในอดีตว่าเคยเกิดที่ไหน) แล้วปล่อย handle ให้ pattern ใหม่วาดชุดใหม่
-  - Info panel (มุมขวาบน): สถานะ FORMING/none, rising/falling count เทียบ min, จำนวน swing; alert เมื่อ pattern ใหม่ก่อตัว
+  - Megaphone = ยอดทำ HH ต่อเนื่อง (rising steps ≥ `inpMinRise`) + ก้นทำ LL ต่อเนื่อง (falling steps ≥ `inpMinFall`) พร้อมกัน = กรอบถ่างออก; นับ trailing run จาก array swing (จากใหม่→เก่า, break เมื่อเจอ step ที่ไม่ต่อเนื่อง — LH ทำ rise=0, HL ทำ fall=0); Bull = swing ล่าสุดเป็น HH (กล่องเขียว), Bear = LL (กล่องแดง)
+  - State machine: pattern ใหม่ก่อตัว → วาดเส้นขอบ + กล่องครอบ + label `◀ BULL/BEAR MEGAPHONE ▶`; ยังถ่างต่อ → ยืดขอบตาม (**การขยายกรอบไม่ใช่ breakout**); หยุดถ่าง (เจอ LH/HL) → freeze แล้ว **arm OCO plan** ที่ขอบกรอบสุดท้าย (เฉพาะเมื่อ close ยังอยู่ในกรอบ + วันผ่าน day filter) พร้อมยืดขอบขวาของกล่องตามราคาไปจนกว่าจะเบรค/หมดอายุ/มี pattern ใหม่
+  - Breakout: แท่ง confirmed แรกที่ high > planTop → BUY / low < planBot → SELL ที่ขอบกรอบ (gap ข้าม → fill ที่ open, บวก/ลบ spread); เบรคสองฝั่งแท่งเดียว → ทิศตามสีแท่ง; ห้ามเบรคแท่งเดียวกับที่ arm; plan หมดอายุตาม `inpPlanExpiry` แท่ง (กันออเดอร์ผีไกลจากกล่อง); pattern ใหม่ confirm → ยกเลิก plan + ปิดทุก position ที่ close
+  - Risk: 1R = SL% × range (ไม่มี Distance/ATR), SL = ent±1R, TP = ent±1R×RR, lot = Risk$/(1R×pipValueRatio); ไม่มี Trailing SL / Recovery
+  - 2nd Order (toggle): main เบรคแล้วราคาย่อแตะ 50% midline → **ปิด main ที่ midline** (บันทึก R จริง) แล้วเปิด 2nd order ทิศเดิมที่ midline; TP = ขอบที่เบรค, SL = ขอบตรงข้าม (R:R ≈ 1:1)
+  - Visuals สไตล์ V11.0: วงกลม entry, ลูกศร entry→SL/TP, เส้น+ป้ายราคา Entry/SL/TP, label CONFIRMED, exit circle + R label + trade path; Luxe stats 4 ตาราง (Main, By Day, Daily Log, Monthly) + Day-of-week filter + stats mode (Days/Months/Specific Month)
+  - Info panel (มุมขวาบน): สถานะ FORMING/ARMED/none, rising/falling count, swing count, box range, active trades, plan state; alert เมื่อ pattern ใหม่ก่อตัว
+  - Pine v6 gotchas ที่เจอแล้ว: `var bool` เก็บ `na` ไม่ได้ (ใช้ int sentinel), `int/int` เป็น integer division (คูณ `1.0` ก่อนหาร)
 - `DowTheory_Trend_V1.0.mq5` - Expert Advisor สำหรับ MT5 (Frame Break system — คนละระบบกับ Megaphone, เก็บไว้เป็น EA เทรด)
   - เบรค/fill ตรวจแบบ tick-based (รู้ลำดับ intra-bar จริง จึงไม่ต้องมีกฎ "แท่งเบรคห้าม fill" และไม่มีเคสเบรคสองฝั่งพร้อมกัน), pivot/frame confirm แบบ bar-close, spread ใช้ bid/ask จริง (ไม่มี input spread)
   - Warm-up: OnInit ไล่สร้าง swing/frame state จากอดีต (ไม่ส่งออเดอร์ย้อนหลัง — กรอบที่เบรค/fill ไปแล้วในอดีตถือว่า consumed), รับ position เดิมของ EA กลับหลัง restart (adopt by magic + "Reco" ใน comment)
