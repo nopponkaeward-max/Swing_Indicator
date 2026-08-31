@@ -170,15 +170,7 @@ if barstate.isconfirmed and newPivot
         float boxTop    = math.max(upToP, upFromP)
         float boxBottom = math.min(loToP, loFromP)
 
-        // 50% midline: interpolate upper & lower boundaries at boxLeft/boxRight
-        float upSlope = (upToP - upFromP) / math.max(upToB - upFromB, 1)
-        float loSlope = (loToP - loFromP) / math.max(loToB - loFromB, 1)
-        float upAtL   = upFromP + upSlope * (boxLeft - upFromB)
-        float upAtR   = upFromP + upSlope * (boxRight - upFromB)
-        float loAtL   = loFromP + loSlope * (boxLeft - loFromB)
-        float loAtR   = loFromP + loSlope * (boxRight - loFromB)
-        float midLP   = (upAtL + loAtL) / 2
-        float midRP   = (upAtR + loAtR) / 2
+        float midP = (boxTop + boxBottom) / 2
 
         if not megaActive
             megaActive := true
@@ -190,7 +182,7 @@ if barstate.isconfirmed and newPivot
                 megaDn := line.new(loFromB, loFromP, loToB, loToP,
                      color=inpDownColor, width=2, extend=extend.right)
             if inpShowMid
-                megaMid := line.new(boxLeft, midLP, boxRight, midRP,
+                megaMid := line.new(boxLeft, midP, boxRight, midP,
                      color=inpMidColor, width=1, style=line.style_dashed, extend=extend.right)
             if inpShowBox
                 megaBox := box.new(boxLeft, boxTop, boxRight, boxBottom,
@@ -208,8 +200,8 @@ if barstate.isconfirmed and newPivot
                 line.set_xy1(megaDn, loFromB, loFromP)
                 line.set_xy2(megaDn, loToB, loToP)
             if not na(megaMid)
-                line.set_xy1(megaMid, boxLeft, midLP)
-                line.set_xy2(megaMid, boxRight, midRP)
+                line.set_xy1(megaMid, boxLeft, midP)
+                line.set_xy2(megaMid, boxRight, midP)
             if not na(megaBox)
                 box.set_lefttop(megaBox, boxLeft, boxTop)
                 box.set_rightbottom(megaBox, boxRight, boxBottom)
@@ -264,15 +256,7 @@ if barstate.isconfirmed and seqUpdated
         int   boxL   = math.min(b0, b1)
         int   boxR   = math.max(b4, b5)
 
-        // 50% midline: interpolate upper (b0→b4) & lower (b1→b5) at boxL/boxR
-        float sUpSlope = (p4 - p0) / math.max(b4 - b0, 1)
-        float sDnSlope = (p5 - p1) / math.max(b5 - b1, 1)
-        float sUpAtL   = p0 + sUpSlope * (boxL - b0)
-        float sUpAtR   = p0 + sUpSlope * (boxR - b0)
-        float sDnAtL   = p1 + sDnSlope * (boxL - b1)
-        float sDnAtR   = p1 + sDnSlope * (boxR - b1)
-        float sMidLP   = (sUpAtL + sDnAtL) / 2
-        float sMidRP   = (sUpAtR + sDnAtR) / 2
+        float sMidP = (boxTop + boxBot) / 2
 
         if not seqActive
             seqActive := true
@@ -283,7 +267,7 @@ if barstate.isconfirmed and seqUpdated
                 seqDnLine := line.new(b1, p1, b5, p5,
                      color=inpSeqDnColor, width=2, extend=extend.right)
             if inpSeqMid
-                seqMidLine := line.new(boxL, sMidLP, boxR, sMidRP,
+                seqMidLine := line.new(boxL, sMidP, boxR, sMidP,
                      color=inpSeqMidColor, width=1, style=line.style_dashed, extend=extend.right)
             if inpSeqBox
                 seqBoxObj := box.new(boxL, boxTop, boxR, boxBot,
@@ -301,8 +285,8 @@ if barstate.isconfirmed and seqUpdated
                 line.set_xy1(seqDnLine, b1, p1)
                 line.set_xy2(seqDnLine, b5, p5)
             if not na(seqMidLine)
-                line.set_xy1(seqMidLine, boxL, sMidLP)
-                line.set_xy2(seqMidLine, boxR, sMidRP)
+                line.set_xy1(seqMidLine, boxL, sMidP)
+                line.set_xy2(seqMidLine, boxR, sMidP)
             if not na(seqBoxObj)
                 box.set_lefttop(seqBoxObj, boxL, boxTop)
                 box.set_rightbottom(seqBoxObj, boxR, boxBot)
