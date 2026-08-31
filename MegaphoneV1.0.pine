@@ -202,7 +202,7 @@ f_countFalling() =>
     cnt
 
 var bool  megaActive   = false
-var bool  megaIsBull   = bool(na)
+var int   megaIsBullCode = 0
 var line  megaUp       = na
 var line  megaDn       = na
 var line  megaMid      = na
@@ -251,7 +251,7 @@ if barstate.isconfirmed and newPivot
         curBoxBottom := boxBottom
         curMidP      := midP
         curRange     := boxTop - boxBottom
-        megaIsBull   := isBull
+        megaIsBullCode := isBull ? 1 : -1
 
         color boxCol = isBull ? inpBullColor : inpBearColor
         string megaType = isBull ? "BULL" : "BEAR"
@@ -916,8 +916,8 @@ if showMonthlyTable and barstate.islast and statMode == "2. Months"
 // ==========================================
 
 if inpShowPanel and barstate.islast
-    color bullBearCol = megaIsBull == true ? inpBullColor : megaIsBull == false ? inpBearColor : color.gray
-    string typeStr    = megaIsBull == true ? "BULL" : megaIsBull == false ? "BEAR" : "-"
+    color bullBearCol = megaIsBullCode == 1 ? inpBullColor : megaIsBullCode == -1 ? inpBearColor : color.gray
+    string typeStr    = megaIsBullCode == 1 ? "BULL" : megaIsBullCode == -1 ? "BEAR" : "-"
     var table panel = table.new(position.top_right, 2, 7, bgcolor=color.new(color.black, 70), border_width=1)
     table.cell(panel, 0, 0, "Megaphone", text_color=bullBearCol, text_size=size.normal, text_halign=text.align_left)
     table.cell(panel, 1, 0, megaActive ? "● " + typeStr + " FORMING" : hasPlan ? "● ARMED" : "— none —",
@@ -946,7 +946,7 @@ if inpShowPanel and barstate.islast
 // ==========================================
 
 if inpAlertOn and newMega
-    string alertType = megaIsBull == true ? "Bull" : "Bear"
+    string alertType = megaIsBullCode == 1 ? "Bull" : "Bear"
     alert(alertType + " Megaphone / Broadening Formation detected", alert.freq_once_per_bar)
 
 alertcondition(newMega, title="Megaphone Detected",
