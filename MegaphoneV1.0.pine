@@ -43,6 +43,8 @@ spreadPts      = input.float(0, "Spread (price)", minval=0, step=0.0001, group="
      tooltip="BUY: entry = ขอบกรอบ + spread\nSELL: entry = ขอบกรอบ - spread")
 inpPlanExpiry  = input.int(100, "Plan Expiry (bars, 0=ไม่หมดอายุ)", minval=0, group="Breakout Trading",
      tooltip="ยกเลิก plan อัตโนมัติถ้าราคาไม่เบรคกรอบภายใน N แท่งหลัง pattern จบ\nกันออเดอร์ผีที่เกิดไกลจากกล่อง")
+useInstantBrk  = input.bool(false, "Instant Entry (หลุดกรอบก่อน confirm)", group="Breakout Trading",
+     tooltip="กรณี pattern จบช้า (pivot ยืนยันช้า) แล้วราคาหลุดกรอบไปไกลแล้ว:\nON = เข้า market ทันทีที่ close (วงกลมออเดอร์จะอยู่ไกลจากขอบกรอบ)\nOFF = ไม่เข้าเทรด แสดง label MISSED BREAK ที่ขอบกรอบแทน\n(ออเดอร์จะเกิดที่ขอบกรอบเท่านั้น)")
 
 // --- 2nd Order ---
 use2ndOrder    = input.bool(false, "Enable 2nd Order (pullback ถึง midline)", group="2nd Order",
@@ -451,12 +453,17 @@ if newMega
 // --- Arm plan when megaphone freezes (pattern จบ กรอบสุดท้ายนิ่งแล้ว) ---
 if megaFrozen and not na(curBoxTop) and not na(curBoxBottom) and curRange > 0
     if close > curBoxTop or close < curBoxBottom
-        // ราคาหลุดกรอบไปแล้วตอนที่ pattern เพิ่ง freeze (pivot ยืนยันช้า) → เข้า market ทันทีที่ close
-        if f_dayAllowed()
-            bool  instIsB  = close > curBoxTop
+        // ราคาหลุดกรอบไปแล้วตอนที่ pattern เพิ่ง freeze (pivot ยืนยันช้า)
+        bool instIsB = close > curBoxTop
+        if useInstantBrk and f_dayAllowed()
             float instEnt  = instIsB ? close + spreadPts : close - spreadPts
             float instOneR = curRange * oneRPct
             bool _o1 = f_openTrade(instIsB, instEnt, instOneR, curBoxTop, curBoxBottom, curMidP, "\n(Instant Break)")
+        else
+            // default: ไม่ไล่ราคา — ออเดอร์ต้องเกิดที่ขอบกรอบเท่านั้น
+            label.new(bar_index, instIsB ? curBoxTop : curBoxBottom, text="MISSED BREAK\n(late pivot)",
+                 style=instIsB ? label.style_label_down : label.style_label_up,
+                 color=color.new(color.gray, 40), textcolor=color.white, size=size.tiny)
         armedBox := na
     else
         hasPlan   := true
@@ -513,9 +520,10 @@ if barstate.isconfirmed and hasPlan and not megaFrozen and not na(planTop) and n
         bool actIsB = brkUp
         if f_dayAllowed()
             float oneR = planRange * oneRPct
-            // gap ข้าม level → fill ที่ open แทนขอบกรอบ
+            // gap ข้าม level → fill ที่ open แทนขอบกรอบ (tag Gap Fill ให้รู้ว่าทำไมไม่ตรงขอบ)
+            bool  gapFill = actIsB ? open > planTop : open < planBot
             float ent  = actIsB ? math.max(planTop, open) + spreadPts : math.min(planBot, open) - spreadPts
-            bool _o2 = f_openTrade(actIsB, ent, oneR, planTop, planBot, planMid, "\n(Megaphone)")
+            bool _o2 = f_openTrade(actIsB, ent, oneR, planTop, planBot, planMid, gapFill ? "\n(Gap Fill)" : "\n(Megaphone)")
         else
             // เบรคตรงวันที่ปิดเทรดตาม day filter → ข้าม แต่แสดงให้เห็นว่าเบรคแล้ว
             label.new(bar_index, actIsB ? planTop : planBot, text="SKIP (Day Filter)",
