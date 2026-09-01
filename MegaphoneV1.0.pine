@@ -47,8 +47,10 @@ useStopFill    = input.bool(true, "Fill escaped break at edge (Buy/Sell Stop)", 
      tooltip="ระบบวาง Buy Stop ที่ขอบบน + Sell Stop ที่ขอบล่าง (OCO) — ฝั่งใดโดน trigger → fill ที่ขอบ, ยกเลิกอีกฝั่ง\nกรณี pattern จบช้า (pivot ยืนยันช้า) แล้วราคาหลุดกรอบไปแล้ว:\nON = ถือว่า stop order โดน trigger, fill ที่ขอบกรอบ (ไม่พลาดออเดอร์, วงกลมอยู่ที่ขอบ)\nOFF = ไม่เข้าเทรด แสดง label MISSED BREAK")
 
 // --- 2nd Order ---
-use2ndOrder    = input.bool(false, "Enable 2nd Order (pullback ถึง midline)", group="2nd Order",
-     tooltip="เมื่อ main เบรคกรอบแล้ว ราคาย่อกลับมาแตะ 50% midline → เปิด order ที่ 2\nTP = ขอบที่เบรค (main entry)\nSL = ขอบ box อีกฝั่ง")
+use2ndOrder    = input.bool(false, "Enable 2nd Order (ปิด main ที่ midline)", group="2nd Order",
+     tooltip="เมื่อ main เบรคกรอบแล้ว ราคาย่อกลับมาแตะ 50% midline → ปิด main ที่ midline แล้วเปิด order ที่ 2\nTP = ขอบที่เบรค (main entry)\nSL = ขอบ box อีกฝั่ง")
+useReinforce   = input.bool(false, "Enable Reinforce (main ยังเปิด + เติมไม้ที่ midline)", group="2nd Order",
+     tooltip="เมื่อ main เบรคกรอบแล้วราคาย่อกลับมาแตะ 50% midline → เปิดไม้เสริมตรงจุดนั้น โดย main ยังเปิดอยู่ (วิ่งต่อไป TP เดิม)\nไม้เสริม: TP = ราคาทุน (entry) ของ main, SL = SL เดียวกับ main\nต้องตั้ง SL% > 50% (ไม่งั้น SL จะอยู่ผิดฝั่ง — ไม้เสริมจะถูกข้าม)\nถ้าเปิดพร้อม 2nd Order → 2nd Order มาก่อน")
 
 // --- Day-of-week Filter ---
 tradeSun       = input.bool(false, "Trade Sunday",    group="Day Filter")
@@ -542,7 +544,7 @@ if barstate.isconfirmed and hasPlan and not megaFrozen and not na(planTop) and n
 // --- 8. 2ND ORDER ---
 // ==========================================
 
-if barstate.isconfirmed and use2ndOrder and array.size(tEntry) > 0
+if barstate.isconfirmed and (use2ndOrder or useReinforce) and array.size(tEntry) > 0
     int si = array.size(tEntry) - 1
     while si >= 0
         if si < array.size(tEntry) and not array.get(tIs2nd, si) and not array.get(tHas2nd, si) and bar_index > array.get(tBarIdx, si)
@@ -551,7 +553,7 @@ if barstate.isconfirmed and use2ndOrder and array.size(tEntry) > 0
             float mBTop = array.get(tBoxTop, si)
             float mBBot = array.get(tBoxBot, si)
             bool  midHit = mIsB ? low <= mMid : high >= mMid
-            if midHit
+            if midHit and use2ndOrder
                 // === CLOSE MAIN ORDER at midline ===
                 float mEnt      = array.get(tEntry, si)
                 float mOneR     = array.get(tOneR, si)
@@ -617,6 +619,50 @@ if barstate.isconfirmed and use2ndOrder and array.size(tEntry) > 0
                 string s2Txt = "CONFIRMED " + (sIsB ? "BUY" : "SELL") + " [2nd]\n(Megaphone)\nSize: " + str.tostring(sLot, "#.##") + " Lots"
                 label.new(bar_index, sEnt, text=s2Txt, color=color.new(color.black, 65), textcolor=color.new(color.white, 20),
                      style=sIsB ? label.style_label_up : label.style_label_down, size=size.small)
+            else if midHit and useReinforce
+                // === REINFORCE: main ยังเปิดอยู่, เติมไม้เสริมที่ midline ===
+                array.set(tHas2nd, si, true)   // เติมไม้เดียวต่อ main
+                float mEnt = array.get(tEntry, si)
+                float mSL  = array.get(tSL, si)
+                float rEnt = mMid
+                float rTP  = mEnt          // TP = ราคาทุน main (ขอบเบรค)
+                float rSL  = mSL           // SL = SL เดียวกับ main
+                bool  rValid = mIsB ? (rSL < rEnt and rTP > rEnt) : (rSL > rEnt and rTP < rEnt)
+                if rValid
+                    float rOneR = math.abs(rEnt - rSL)
+                    float rLot  = rOneR > 0 ? riskAmount / (rOneR * pipValueRatio) : 0
+                    float rRR   = rOneR > 0 ? math.abs(rTP - rEnt) / rOneR : 0
+                    array.push(tIsBuy, mIsB)
+                    array.push(tEntry, rEnt)
+                    array.push(tSL, rSL)
+                    array.push(tTP, rTP)
+                    array.push(tBarIdx, bar_index)
+                    array.push(tOneR, rOneR)
+                    array.push(tTradeRR, rRR)
+                    array.push(tIs2nd, true)
+                    array.push(tOriginTime, time)
+                    array.push(tBoxTop, mBTop)
+                    array.push(tBoxBot, mBBot)
+                    array.push(tMidP_arr, mMid)
+                    array.push(tHas2nd, true)  // ไม้เสริมไม่ spawn ต่อ
+                    // --- Reinforce visuals ---
+                    label.new(bar_index, rEnt, text="", style=label.style_circle,
+                         color=color.new(mIsB ? color.green : color.red, 70), size=size.large)
+                    line.new(bar_index, rEnt, bar_index, rTP, color=color.new(color.green, 70), width=1, style=line.style_arrow_right)
+                    line.new(bar_index, rEnt, bar_index, rSL, color=color.new(color.red, 70), width=1, style=line.style_arrow_right)
+                    line.new(bar_index, rEnt, bar_index + 6, rEnt, color=color.new(mIsB ? color.green : color.red, 30), width=2)
+                    line.new(bar_index, rTP, bar_index + 6, rTP, color=color.new(color.green, 30), width=2)
+                    line.new(bar_index, rSL, bar_index + 6, rSL, color=color.new(color.red, 30), width=2)
+                    label.new(bar_index + 6, rEnt, text=str.tostring(rEnt, format.mintick), style=label.style_label_left, color=color.new(mIsB ? color.green : color.red, 80), textcolor=mIsB ? color.green : color.red, size=size.tiny)
+                    label.new(bar_index + 6, rTP, text=str.tostring(rTP, format.mintick), style=label.style_label_left, color=color.new(color.green, 80), textcolor=color.green, size=size.tiny)
+                    label.new(bar_index + 6, rSL, text=str.tostring(rSL, format.mintick), style=label.style_label_left, color=color.new(color.red, 80), textcolor=color.red, size=size.tiny)
+                    string rTxt = "REINFORCE " + (mIsB ? "BUY" : "SELL") + "\nTP=ทุน main\nSize: " + str.tostring(rLot, "#.##") + " Lots"
+                    label.new(bar_index, rEnt, text=rTxt, color=color.new(color.black, 65), textcolor=color.new(color.white, 20),
+                         style=mIsB ? label.style_label_up : label.style_label_down, size=size.small)
+                else
+                    label.new(bar_index, rEnt, text="Reinforce skipped\n(SL% ≤ 50%)",
+                         style=mIsB ? label.style_label_up : label.style_label_down,
+                         color=color.new(color.gray, 40), textcolor=color.white, size=size.tiny)
         si -= 1
 
 // ==========================================
@@ -774,7 +820,7 @@ if showStatsTable and barstate.islast
     table.cell(statsTable, 0, 0, "◆  MEGAPHONE BREAKOUT", text_color=lxTitleTx, text_size=size.small, bgcolor=lxHeadBg)
     table.cell(statsTable, 0, 1, periodStr + "  ·  R:R 1:" + str.tostring(rrRatio, "#.#"), text_color=lxMuted, text_size=size.tiny, bgcolor=lxSubBg)
     table.cell(statsTable, 0, 2, "Mode", text_color=lxMuted, text_size=size.tiny, bgcolor=lxRowA, text_halign=text.align_left)
-    table.cell(statsTable, 1, 2, "Breakout" + (use2ndOrder ? " + 2nd" : ""), text_color=lxCyan, text_size=size.small, bgcolor=lxRowA, text_halign=text.align_right)
+    table.cell(statsTable, 1, 2, "Breakout" + (use2ndOrder ? " + 2nd" : "") + (useReinforce ? " + Reinf" : ""), text_color=lxCyan, text_size=size.small, bgcolor=lxRowA, text_halign=text.align_right)
     table.cell(statsTable, 0, 3, "1R Basis", text_color=lxMuted, text_size=size.tiny, bgcolor=lxRowB, text_halign=text.align_left)
     table.cell(statsTable, 1, 3, str.tostring(oneRPctVal, "#.#") + "% Range", text_color=lxText, text_size=size.small, bgcolor=lxRowB, text_halign=text.align_right)
     table.cell(statsTable, 0, 4, "Trades", text_color=lxMuted, text_size=size.tiny, bgcolor=lxRowA, text_halign=text.align_left)
