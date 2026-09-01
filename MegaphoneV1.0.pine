@@ -43,8 +43,8 @@ spreadPts      = input.float(0, "Spread (price)", minval=0, step=0.0001, group="
      tooltip="BUY: entry = ขอบกรอบ + spread\nSELL: entry = ขอบกรอบ - spread")
 inpPlanExpiry  = input.int(100, "Plan Expiry (bars, 0=ไม่หมดอายุ)", minval=0, group="Breakout Trading",
      tooltip="ยกเลิก plan อัตโนมัติถ้าราคาไม่เบรคกรอบภายใน N แท่งหลัง pattern จบ\nกันออเดอร์ผีที่เกิดไกลจากกล่อง")
-useInstantBrk  = input.bool(false, "Instant Entry (หลุดกรอบก่อน confirm)", group="Breakout Trading",
-     tooltip="กรณี pattern จบช้า (pivot ยืนยันช้า) แล้วราคาหลุดกรอบไปไกลแล้ว:\nON = เข้า market ทันทีที่ close (วงกลมออเดอร์จะอยู่ไกลจากขอบกรอบ)\nOFF = ไม่เข้าเทรด แสดง label MISSED BREAK ที่ขอบกรอบแทน\n(ออเดอร์จะเกิดที่ขอบกรอบเท่านั้น)")
+useStopFill    = input.bool(true, "Fill escaped break at edge (Buy/Sell Stop)", group="Breakout Trading",
+     tooltip="ระบบวาง Buy Stop ที่ขอบบน + Sell Stop ที่ขอบล่าง (OCO) — ฝั่งใดโดน trigger → fill ที่ขอบ, ยกเลิกอีกฝั่ง\nกรณี pattern จบช้า (pivot ยืนยันช้า) แล้วราคาหลุดกรอบไปแล้ว:\nON = ถือว่า stop order โดน trigger, fill ที่ขอบกรอบ (ไม่พลาดออเดอร์, วงกลมอยู่ที่ขอบ)\nOFF = ไม่เข้าเทรด แสดง label MISSED BREAK")
 
 // --- 2nd Order ---
 use2ndOrder    = input.bool(false, "Enable 2nd Order (pullback ถึง midline)", group="2nd Order",
@@ -454,13 +454,13 @@ if newMega
 if megaFrozen and not na(curBoxTop) and not na(curBoxBottom) and curRange > 0
     if close > curBoxTop or close < curBoxBottom
         // ราคาหลุดกรอบไปแล้วตอนที่ pattern เพิ่ง freeze (pivot ยืนยันช้า)
+        // → pending stop ที่ขอบกรอบถือว่าโดน trigger, fill ที่ราคาขอบ (stop level) ไม่ใช่ที่ close
         bool instIsB = close > curBoxTop
-        if useInstantBrk and f_dayAllowed()
-            float instEnt  = instIsB ? close + spreadPts : close - spreadPts
+        if useStopFill and f_dayAllowed()
+            float stopEnt  = instIsB ? curBoxTop + spreadPts : curBoxBottom - spreadPts
             float instOneR = curRange * oneRPct
-            bool _o1 = f_openTrade(instIsB, instEnt, instOneR, curBoxTop, curBoxBottom, curMidP, "\n(Instant Break)")
+            bool _o1 = f_openTrade(instIsB, stopEnt, instOneR, curBoxTop, curBoxBottom, curMidP, instIsB ? "\n(Buy Stop)" : "\n(Sell Stop)")
         else
-            // default: ไม่ไล่ราคา — ออเดอร์ต้องเกิดที่ขอบกรอบเท่านั้น
             label.new(bar_index, instIsB ? curBoxTop : curBoxBottom, text="MISSED BREAK\n(late pivot)",
                  style=instIsB ? label.style_label_down : label.style_label_up,
                  color=color.new(color.gray, 40), textcolor=color.white, size=size.tiny)
@@ -476,10 +476,10 @@ if megaFrozen and not na(curBoxTop) and not na(curBoxBottom) and curRange > 0
         float bTP    = planTop + spreadPts + oneR * rrRatio
         float sTP    = planBot - spreadPts - oneR * rrRatio
         float bLot   = oneR > 0 ? riskAmount / (oneR * pipValueRatio) : 0
-        planBuyLine  := line.new(bar_index, planTop, bar_index + 3, planTop, color=color.blue, width=2, style=line.style_dashed)
-        planSellLine := line.new(bar_index, planBot, bar_index + 3, planBot, color=color.blue, width=2, style=line.style_dashed)
-        string bTxt = "PLAN BUY (Break ▲)\nSize: " + str.tostring(bLot, "#.##") + " Lots\nR:R: 1:" + str.tostring(rrRatio, "#.#")
-        string sTxt = "PLAN SELL (Break ▼)\nSize: " + str.tostring(bLot, "#.##") + " Lots\nR:R: 1:" + str.tostring(rrRatio, "#.#")
+        planBuyLine  := line.new(bar_index, planTop, bar_index + 3, planTop, color=color.new(color.green, 0), width=2, style=line.style_dashed)
+        planSellLine := line.new(bar_index, planBot, bar_index + 3, planBot, color=color.new(color.red, 0), width=2, style=line.style_dashed)
+        string bTxt = "BUY STOP ▲\nSize: " + str.tostring(bLot, "#.##") + " Lots\nR:R: 1:" + str.tostring(rrRatio, "#.#")
+        string sTxt = "SELL STOP ▼\nSize: " + str.tostring(bLot, "#.##") + " Lots\nR:R: 1:" + str.tostring(rrRatio, "#.#")
         planBuyLabel  := label.new(bar_index, bTP, text=bTxt, color=color.new(color.green, 10), textcolor=color.white, style=label.style_label_up, size=size.small)
         planSellLabel := label.new(bar_index, sTP, text=sTxt, color=color.new(color.red, 10), textcolor=color.white, style=label.style_label_down, size=size.small)
 else if megaFrozen
@@ -520,10 +520,11 @@ if barstate.isconfirmed and hasPlan and not megaFrozen and not na(planTop) and n
         bool actIsB = brkUp
         if f_dayAllowed()
             float oneR = planRange * oneRPct
-            // gap ข้าม level → fill ที่ open แทนขอบกรอบ (tag Gap Fill ให้รู้ว่าทำไมไม่ตรงขอบ)
+            // Buy/Sell Stop fill ที่ขอบกรอบ; gap ข้าม level → fill ที่ open (slippage)
             bool  gapFill = actIsB ? open > planTop : open < planBot
             float ent  = actIsB ? math.max(planTop, open) + spreadPts : math.min(planBot, open) - spreadPts
-            bool _o2 = f_openTrade(actIsB, ent, oneR, planTop, planBot, planMid, gapFill ? "\n(Gap Fill)" : "\n(Megaphone)")
+            string entTag = gapFill ? (actIsB ? "\n(Buy Stop · Gap)" : "\n(Sell Stop · Gap)") : (actIsB ? "\n(Buy Stop)" : "\n(Sell Stop)")
+            bool _o2 = f_openTrade(actIsB, ent, oneR, planTop, planBot, planMid, entTag)
         else
             // เบรคตรงวันที่ปิดเทรดตาม day filter → ข้าม แต่แสดงให้เห็นว่าเบรคแล้ว
             label.new(bar_index, actIsB ? planTop : planBot, text="SKIP (Day Filter)",
@@ -994,7 +995,7 @@ if inpShowPanel and barstate.islast
     table.cell(panel, 1, 5, str.tostring(array.size(tEntry)) + " active",
          text_color=color.aqua, text_size=size.small, text_halign=text.align_left)
     table.cell(panel, 0, 6, "Plan", text_color=color.aqua, text_size=size.small, text_halign=text.align_left)
-    table.cell(panel, 1, 6, hasPlan ? "OCO Armed" : "—",
+    table.cell(panel, 1, 6, hasPlan ? "OCO Buy/Sell Stop" : "—",
          text_color=hasPlan ? color.blue : color.gray, text_size=size.small, text_halign=text.align_left)
 
 // ==========================================
