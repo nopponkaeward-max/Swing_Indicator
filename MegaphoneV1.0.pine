@@ -373,6 +373,39 @@ f_dayAllowed() =>
         => true
     ok
 
+// เปิดเทรด main: push arrays + วาด entry visuals (วงกลม, ลูกศร SL/TP, เส้น+ป้ายราคา, label CONFIRMED)
+f_openTrade(bool actIsB, float ent, float oneR, float boxT, float boxB, float midP, string noteTag) =>
+    float sl  = actIsB ? ent - oneR : ent + oneR
+    float tp  = actIsB ? ent + oneR * rrRatio : ent - oneR * rrRatio
+    float lot = oneR > 0 ? riskAmount / (oneR * pipValueRatio) : 0
+    array.push(tIsBuy, actIsB)
+    array.push(tEntry, ent)
+    array.push(tSL, sl)
+    array.push(tTP, tp)
+    array.push(tBarIdx, bar_index)
+    array.push(tOneR, oneR)
+    array.push(tTradeRR, rrRatio)
+    array.push(tIs2nd, false)
+    array.push(tOriginTime, time)
+    array.push(tBoxTop, boxT)
+    array.push(tBoxBot, boxB)
+    array.push(tMidP_arr, midP)
+    array.push(tHas2nd, false)
+    label.new(bar_index, ent, text="", style=label.style_circle,
+         color=color.new(actIsB ? color.green : color.red, 70), size=size.large)
+    line.new(bar_index, ent, bar_index, tp, color=color.new(color.green, 70), width=1, style=line.style_arrow_right)
+    line.new(bar_index, ent, bar_index, sl, color=color.new(color.red, 70), width=1, style=line.style_arrow_right)
+    line.new(bar_index, ent, bar_index + 6, ent, color=color.new(actIsB ? color.green : color.red, 30), width=2)
+    line.new(bar_index, tp, bar_index + 6, tp, color=color.new(color.green, 30), width=2)
+    line.new(bar_index, sl, bar_index + 6, sl, color=color.new(color.red, 30), width=2)
+    label.new(bar_index + 6, ent, text=str.tostring(ent, format.mintick), style=label.style_label_left, color=color.new(actIsB ? color.green : color.red, 80), textcolor=actIsB ? color.green : color.red, size=size.tiny)
+    label.new(bar_index + 6, tp, text=str.tostring(tp, format.mintick), style=label.style_label_left, color=color.new(color.green, 80), textcolor=color.green, size=size.tiny)
+    label.new(bar_index + 6, sl, text=str.tostring(sl, format.mintick), style=label.style_label_left, color=color.new(color.red, 80), textcolor=color.red, size=size.tiny)
+    string infoText = "CONFIRMED " + (actIsB ? "BUY" : "SELL") + noteTag + "\nSize: " + str.tostring(lot, "#.##") + " Lots"
+    label.new(bar_index, ent, text=infoText, color=color.new(color.black, 65), textcolor=color.new(color.white, 20),
+         style=actIsB ? label.style_label_up : label.style_label_down, size=size.small)
+    true
+
 if newMega
     if hasPlan
         line.delete(planBuyLine)
@@ -416,9 +449,16 @@ if newMega
                 array.remove(tBoxTop, ci), array.remove(tBoxBot, ci), array.remove(tMidP_arr, ci), array.remove(tHas2nd, ci)
             ci -= 1
 // --- Arm plan when megaphone freezes (pattern จบ กรอบสุดท้ายนิ่งแล้ว) ---
-if megaFrozen
-    bool priceInside = close < curBoxTop and close > curBoxBottom
-    if f_dayAllowed() and not na(curBoxTop) and not na(curBoxBottom) and curRange > 0 and priceInside
+if megaFrozen and not na(curBoxTop) and not na(curBoxBottom) and curRange > 0
+    if close > curBoxTop or close < curBoxBottom
+        // ราคาหลุดกรอบไปแล้วตอนที่ pattern เพิ่ง freeze (pivot ยืนยันช้า) → เข้า market ทันทีที่ close
+        if f_dayAllowed()
+            bool  instIsB  = close > curBoxTop
+            float instEnt  = instIsB ? close + spreadPts : close - spreadPts
+            float instOneR = curRange * oneRPct
+            bool _o1 = f_openTrade(instIsB, instEnt, instOneR, curBoxTop, curBoxBottom, curMidP, "\n(Instant Break)")
+        armedBox := na
+    else
         hasPlan   := true
         planTop   := curBoxTop
         planBot   := curBoxBottom
@@ -435,8 +475,8 @@ if megaFrozen
         string sTxt = "PLAN SELL (Break ▼)\nSize: " + str.tostring(bLot, "#.##") + " Lots\nR:R: 1:" + str.tostring(rrRatio, "#.#")
         planBuyLabel  := label.new(bar_index, bTP, text=bTxt, color=color.new(color.green, 10), textcolor=color.white, style=label.style_label_up, size=size.small)
         planSellLabel := label.new(bar_index, sTP, text=sTxt, color=color.new(color.red, 10), textcolor=color.white, style=label.style_label_down, size=size.small)
-    else
-        armedBox := na
+else if megaFrozen
+    armedBox := na
 
 // --- Plan expiry (กันออเดอร์ผีไกลจากกล่อง) ---
 if barstate.isconfirmed and hasPlan and inpPlanExpiry > 0 and bar_index - armBar >= inpPlanExpiry
@@ -471,47 +511,16 @@ if barstate.isconfirmed and hasPlan and not megaFrozen and not na(planTop) and n
     bool triggered = brkUp or brkDn
     if triggered
         bool actIsB = brkUp
-        float oneR = planRange * oneRPct
-        // gap ข้าม level → fill ที่ open แทนขอบกรอบ
-        float ent  = actIsB ? math.max(planTop, open) + spreadPts : math.min(planBot, open) - spreadPts
-        float sl   = actIsB ? ent - oneR : ent + oneR
-        float tp   = actIsB ? ent + oneR * rrRatio : ent - oneR * rrRatio
-        float lot  = oneR > 0 ? riskAmount / (oneR * pipValueRatio) : 0
-        array.push(tIsBuy, actIsB)
-        array.push(tEntry, ent)
-        array.push(tSL, sl)
-        array.push(tTP, tp)
-        array.push(tBarIdx, bar_index)
-        array.push(tOneR, oneR)
-        array.push(tTradeRR, rrRatio)
-        array.push(tIs2nd, false)
-        array.push(tOriginTime, time)
-        array.push(tBoxTop, planTop)
-        array.push(tBoxBot, planBot)
-        array.push(tMidP_arr, planMid)
-        array.push(tHas2nd, false)
-        // --- Entry visuals ---
-        label.new(bar_index, ent, text="", style=label.style_circle,
-             color=color.new(actIsB ? color.blue : color.red, 50), size=size.normal)
-        label.new(bar_index, ent, text="Break out Megaphone",
-             style=actIsB ? label.style_label_down : label.style_label_up,
-             color=color.new(color.gray, 25), textcolor=color.white, size=size.small)
-        label.new(bar_index, ent, text="", style=label.style_circle,
-             color=color.new(actIsB ? color.green : color.red, 70), size=size.large)
-        line.new(bar_index, ent, bar_index, tp, color=color.new(color.green, 70), width=1, style=line.style_arrow_right)
-        line.new(bar_index, ent, bar_index, sl, color=color.new(color.red, 70), width=1, style=line.style_arrow_right)
-        string fmtEnt = str.tostring(ent, format.mintick)
-        string fmtTp  = str.tostring(tp, format.mintick)
-        string fmtSl  = str.tostring(sl, format.mintick)
-        line.new(bar_index, ent, bar_index + 6, ent, color=color.new(actIsB ? color.green : color.red, 30), width=2)
-        line.new(bar_index, tp, bar_index + 6, tp, color=color.new(color.green, 30), width=2)
-        line.new(bar_index, sl, bar_index + 6, sl, color=color.new(color.red, 30), width=2)
-        label.new(bar_index + 6, ent, text=fmtEnt, style=label.style_label_left, color=color.new(actIsB ? color.green : color.red, 80), textcolor=actIsB ? color.green : color.red, size=size.tiny)
-        label.new(bar_index + 6, tp, text=fmtTp, style=label.style_label_left, color=color.new(color.green, 80), textcolor=color.green, size=size.tiny)
-        label.new(bar_index + 6, sl, text=fmtSl, style=label.style_label_left, color=color.new(color.red, 80), textcolor=color.red, size=size.tiny)
-        string infoText = "CONFIRMED " + (actIsB ? "BUY" : "SELL") + "\n(Megaphone)\nSize: " + str.tostring(lot, "#.##") + " Lots"
-        label.new(bar_index, ent, text=infoText, color=color.new(color.black, 65), textcolor=color.new(color.white, 20),
-             style=actIsB ? label.style_label_up : label.style_label_down, size=size.small)
+        if f_dayAllowed()
+            float oneR = planRange * oneRPct
+            // gap ข้าม level → fill ที่ open แทนขอบกรอบ
+            float ent  = actIsB ? math.max(planTop, open) + spreadPts : math.min(planBot, open) - spreadPts
+            bool _o2 = f_openTrade(actIsB, ent, oneR, planTop, planBot, planMid, "\n(Megaphone)")
+        else
+            // เบรคตรงวันที่ปิดเทรดตาม day filter → ข้าม แต่แสดงให้เห็นว่าเบรคแล้ว
+            label.new(bar_index, actIsB ? planTop : planBot, text="SKIP (Day Filter)",
+                 style=actIsB ? label.style_label_down : label.style_label_up,
+                 color=color.new(color.gray, 40), textcolor=color.white, size=size.tiny)
         // --- Cancel plan (กล่องหยุดยืดที่แท่งเบรค) ---
         hasPlan := false
         line.delete(planBuyLine)
