@@ -1,0 +1,1056 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Megaphone / Broadening Formation — Breakout Trading System
+// 1. Swing High/Low (Fractal) + HH/HL/LH/LL labels
+// 2. Megaphone detection (ascending highs + descending lows) — Bull/Bear classification
+// 3. Breakout trading from bounding box (OCO BUY/SELL) + 2nd Order at midline
+// 4. Visual: entry circles, SL/TP arrows, trade path, R labels
+// 5. Luxe stats tables: Main, By Day, Daily Log, Monthly
+
+//@version=6
+indicator("Megaphone Breakout", overlay=true, max_lines_count=500, max_labels_count=500, max_boxes_count=500)
+
+// ==========================================
+// --- 1. INPUT SETTINGS ---
+// ==========================================
+
+// --- Swing Detection ---
+inpLeftRight   = input.int(3, "Swing Left/Right Bars (Fractal)", minval=1, maxval=20)
+inpLookback    = input.int(300, "Lookback Bars (swing buffer)", minval=50, maxval=1000)
+inpShowLabels  = input.bool(true, "Show HH/HL/LH/LL Labels")
+
+// --- Megaphone Detection ---
+inpMinRise     = input.int(2, "Min Ascending Highs", minval=1, maxval=6, group="Megaphone",
+     tooltip="จำนวนขั้นที่ยอดต้องสูงขึ้นต่อเนื่อง")
+inpMinFall     = input.int(2, "Min Descending Lows", minval=1, maxval=6, group="Megaphone",
+     tooltip="จำนวนขั้นที่ก้นต้องต่ำลงต่อเนื่อง")
+inpShowTrend   = input.bool(true, "Show Boundary Trendlines", group="Megaphone")
+inpShowBox     = input.bool(true, "Show Bounding Box", group="Megaphone")
+inpShowMid     = input.bool(true, "Show 50% Midline", group="Megaphone")
+inpUpColor     = input.color(color.lime, "Upper Boundary Color", group="Megaphone")
+inpDownColor   = input.color(color.red, "Lower Boundary Color", group="Megaphone")
+inpMidColor    = input.color(color.white, "Midline Color", group="Megaphone")
+inpBullColor   = input.color(color.green, "Bull Box Color", group="Megaphone")
+inpBearColor   = input.color(color.red, "Bear Box Color", group="Megaphone")
+inpAlertOn     = input.bool(true, "Alert on New Megaphone", group="Megaphone")
+
+// --- Breakout Trading ---
+oneRPctVal     = input.float(50, "1R = % of Range (SL%)", minval=1, maxval=100, step=5, group="Breakout Trading",
+     tooltip="1R = SL% × Megaphone range\nSL = entry ± 1R\nTP = entry ± (1R × R:R)\nหาก ใช้ 2nd Order ควรตั้ง > 50%")
+riskAmount     = input.float(500.0, "Risk per 1R ($)", minval=0.01, group="Breakout Trading")
+rrRatio        = input.float(5.0, "R:R Ratio", minval=0.1, step=0.1, group="Breakout Trading")
+pipValueRatio  = input.float(100.0, "1 Lot Ratio", group="Breakout Trading")
+spreadPts      = input.float(0, "Spread (price)", minval=0, step=0.0001, group="Breakout Trading",
+     tooltip="BUY: entry = ขอบกรอบ + spread\nSELL: entry = ขอบกรอบ - spread")
+inpPlanExpiry  = input.int(100, "Plan Expiry (bars, 0=ไม่หมดอายุ)", minval=0, group="Breakout Trading",
+     tooltip="ยกเลิก plan อัตโนมัติถ้าราคาไม่เบรคกรอบภายใน N แท่งหลัง pattern จบ\nกันออเดอร์ผีที่เกิดไกลจากกล่อง")
+useStopFill    = input.bool(true, "Fill escaped break at edge (Buy/Sell Stop)", group="Breakout Trading",
+     tooltip="ระบบวาง Buy Stop ที่ขอบบน + Sell Stop ที่ขอบล่าง (OCO) — ฝั่งใดโดน trigger → fill ที่ขอบ, ยกเลิกอีกฝั่ง\nกรณี pattern จบช้า (pivot ยืนยันช้า) แล้วราคาหลุดกรอบไปแล้ว:\nON = ถือว่า stop order โดน trigger, fill ที่ขอบกรอบ (ไม่พลาดออเดอร์, วงกลมอยู่ที่ขอบ)\nOFF = ไม่เข้าเทรด แสดง label MISSED BREAK")
+
+// --- 2nd Order ---
+use2ndOrder    = input.bool(false, "Enable 2nd Order (ปิด main ที่ midline)", group="2nd Order",
+     tooltip="เมื่อ main เบรคกรอบแล้ว ราคาย่อกลับมาแตะ 50% midline → ปิด main ที่ midline แล้วเปิด order ที่ 2\nTP = ขอบที่เบรค (main entry)\nSL = ขอบ box อีกฝั่ง")
+useReinforce   = input.bool(false, "Enable Reinforce (main ยังเปิด + เติมไม้ที่ midline)", group="2nd Order",
+     tooltip="เมื่อ main เบรคกรอบแล้วราคาย่อกลับมาแตะ 50% midline → เปิดไม้เสริมตรงจุดนั้น โดย main ยังเปิดอยู่ (วิ่งต่อไป TP เดิม)\nไม้เสริม: TP = ราคาทุน (entry) ของ main, SL = SL เดียวกับ main\nต้องตั้ง SL% > 50% (ไม่งั้น SL จะอยู่ผิดฝั่ง — ไม้เสริมจะถูกข้าม)\nถ้าเปิดพร้อม 2nd Order → 2nd Order มาก่อน")
+
+// --- Day-of-week Filter ---
+tradeSun       = input.bool(false, "Trade Sunday",    group="Day Filter")
+tradeMon       = input.bool(true,  "Trade Monday",    group="Day Filter")
+tradeTue       = input.bool(true,  "Trade Tuesday",   group="Day Filter")
+tradeWed       = input.bool(true,  "Trade Wednesday", group="Day Filter")
+tradeThu       = input.bool(true,  "Trade Thursday",  group="Day Filter")
+tradeFri       = input.bool(true,  "Trade Friday",    group="Day Filter")
+tradeSat       = input.bool(false, "Trade Saturday",  group="Day Filter")
+
+// --- Display & Stats ---
+showTradePath    = input.bool(true, "Show Trade Path Lines", group="Display & Stats")
+inpShowPanel     = input.bool(true, "Show Info Panel", group="Display & Stats")
+showStatsTable   = input.bool(true, "Show Stats Table", group="Display & Stats")
+showDayTable     = input.bool(false, "Show By Day Table", group="Display & Stats")
+showDailyTable   = input.bool(false, "Show Daily Log Table", group="Display & Stats")
+showMonthlyTable = input.bool(true, "Show Monthly Table", group="Display & Stats")
+
+statMode       = input.string("2. Months", title="Stats Mode",
+     options=["1. Days", "2. Months", "3. Specific Month"], group="Display & Stats")
+statDays       = input.int(30, "[Mode 1] Days", minval=1, maxval=365, group="Display & Stats")
+statMonths     = input.int(8, "[Mode 2] Months", minval=1, maxval=12, group="Display & Stats")
+statTargetM    = input.string("August", "[Mode 3] Month",
+     options=["January","February","March","April","May","June","July","August","September","October","November","December"], group="Display & Stats")
+statTargetY    = input.int(0, "[Mode 3] Year (0=current)", minval=0, maxval=2100, group="Display & Stats")
+
+showSun = input.bool(true, "  Show Sunday",    group="Display & Stats")
+showMon = input.bool(true, "  Show Monday",    group="Display & Stats")
+showTue = input.bool(true, "  Show Tuesday",   group="Display & Stats")
+showWed = input.bool(true, "  Show Wednesday", group="Display & Stats")
+showThu = input.bool(true, "  Show Thursday",  group="Display & Stats")
+showFri = input.bool(true, "  Show Friday",    group="Display & Stats")
+showSat = input.bool(true, "  Show Saturday",  group="Display & Stats")
+
+int enabledDayCnt = (showSun?1:0)+(showMon?1:0)+(showTue?1:0)+(showWed?1:0)+(showThu?1:0)+(showFri?1:0)+(showSat?1:0)
+
+mainTablePos    = input.string("Bottom Right",  "Stats Table Position",   options=["Top Left","Top Center","Top Right","Middle Left","Middle Right","Bottom Left","Bottom Center","Bottom Right"], group="Display & Stats")
+dayTablePos     = input.string("Middle Right",  "By Day Table Position",  options=["Top Left","Top Center","Top Right","Middle Left","Middle Right","Bottom Left","Bottom Center","Bottom Right"], group="Display & Stats")
+dailyTablePos   = input.string("Middle Left",   "Daily Log Position",     options=["Top Left","Top Center","Top Right","Middle Left","Middle Right","Bottom Left","Bottom Center","Bottom Right"], group="Display & Stats")
+monthlyTablePos = input.string("Bottom Center", "Monthly Table Position", options=["Top Left","Top Center","Top Right","Middle Left","Middle Right","Bottom Left","Bottom Center","Bottom Right"], group="Display & Stats")
+
+// ==========================================
+// --- 2. HELPERS ---
+// ==========================================
+
+var string tz = syminfo.timezone
+
+f_tablePos(string s) =>
+    switch s
+        "Top Left"      => position.top_left
+        "Top Center"    => position.top_center
+        "Top Right"     => position.top_right
+        "Middle Left"   => position.middle_left
+        "Middle Right"  => position.middle_right
+        "Bottom Left"   => position.bottom_left
+        "Bottom Center" => position.bottom_center
+        =>                 position.bottom_right
+
+f_wrBar(float pct) =>
+    string s = ""
+    int filled = na(pct) ? 0 : math.min(10, math.max(0, math.round(pct / 10)))
+    for _b = 1 to 10
+        s += _b <= filled ? "▰" : "▱"
+    s
+
+f_monthShort(int m) =>
+    switch m
+        1  => "Jan"
+        2  => "Feb"
+        3  => "Mar"
+        4  => "Apr"
+        5  => "May"
+        6  => "Jun"
+        7  => "Jul"
+        8  => "Aug"
+        9  => "Sep"
+        10 => "Oct"
+        11 => "Nov"
+        =>    "Dec"
+
+int currentYear   = year(timenow, tz)
+int currentTotalM = year(timenow, tz) * 12 + month(timenow, tz)
+int targetMonthNum = statTargetM == "January" ? 1 : statTargetM == "February" ? 2 : statTargetM == "March" ? 3 : statTargetM == "April" ? 4 : statTargetM == "May" ? 5 : statTargetM == "June" ? 6 : statTargetM == "July" ? 7 : statTargetM == "August" ? 8 : statTargetM == "September" ? 9 : statTargetM == "October" ? 10 : statTargetM == "November" ? 11 : 12
+int actualTargetY  = statTargetY == 0 ? currentYear : statTargetY
+float oneRPct      = oneRPctVal / 100
+
+// ==========================================
+// --- 3. SWING DETECTION ---
+// ==========================================
+
+isSwingHigh = ta.pivothigh(high, inpLeftRight, inpLeftRight)
+isSwingLow  = ta.pivotlow(low, inpLeftRight, inpLeftRight)
+
+var float[] swingHighPrices = array.new_float()
+var int[]   swingHighBars   = array.new_int()
+var float[] swingLowPrices  = array.new_float()
+var int[]   swingLowBars    = array.new_int()
+
+swingOffset = inpLeftRight
+
+if not na(isSwingHigh)
+    array.push(swingHighPrices, isSwingHigh)
+    array.push(swingHighBars, bar_index - swingOffset)
+    if array.size(swingHighPrices) > inpLookback
+        array.shift(swingHighPrices)
+        array.shift(swingHighBars)
+
+if not na(isSwingLow)
+    array.push(swingLowPrices, isSwingLow)
+    array.push(swingLowBars, bar_index - swingOffset)
+    if array.size(swingLowPrices) > inpLookback
+        array.shift(swingLowPrices)
+        array.shift(swingLowBars)
+
+hCount = array.size(swingHighPrices)
+lCount = array.size(swingLowPrices)
+
+// --- Swing Labels (HH/HL/LH/LL) ---
+if inpShowLabels and not na(isSwingHigh) and hCount >= 2
+    bool isHH = array.get(swingHighPrices, hCount - 1) > array.get(swingHighPrices, hCount - 2)
+    label.new(bar_index - swingOffset, isSwingHigh,
+         text=isHH ? "HH" : "LH", style=label.style_label_down,
+         color=color.new(color.white, 100), textcolor=isHH ? inpUpColor : inpDownColor, size=size.small)
+
+if inpShowLabels and not na(isSwingLow) and lCount >= 2
+    bool isHL = array.get(swingLowPrices, lCount - 1) > array.get(swingLowPrices, lCount - 2)
+    label.new(bar_index - swingOffset, isSwingLow,
+         text=isHL ? "HL" : "LL", style=label.style_label_up,
+         color=color.new(color.white, 100), textcolor=isHL ? inpUpColor : inpDownColor, size=size.small)
+
+// ==========================================
+// --- 4. MEGAPHONE DETECTION (Bull/Bear) ---
+// ==========================================
+
+f_countRising() =>
+    int n = array.size(swingHighPrices)
+    int cnt = 0
+    if n >= 2
+        for i = n - 1 to 1
+            if array.get(swingHighPrices, i) > array.get(swingHighPrices, i - 1)
+                cnt += 1
+            else
+                break
+    cnt
+
+f_countFalling() =>
+    int m = array.size(swingLowPrices)
+    int cnt = 0
+    if m >= 2
+        for i = m - 1 to 1
+            if array.get(swingLowPrices, i) < array.get(swingLowPrices, i - 1)
+                cnt += 1
+            else
+                break
+    cnt
+
+var bool  megaActive   = false
+var int   megaIsBullCode = 0
+var line  megaUp       = na
+var line  megaDn       = na
+var line  megaMid      = na
+var box   megaBox      = na
+var box   armedBox     = na
+var int   megaStartBar = na
+var int   curRise      = 0
+var int   curFall      = 0
+var float curBoxTop    = na
+var float curBoxBottom = na
+var float curMidP      = na
+var float curRange     = na
+
+bool newPivot      = (not na(isSwingHigh)) or (not na(isSwingLow))
+bool newMega       = false
+bool megaFrozen    = false
+
+if barstate.isconfirmed and newPivot
+    int rise = f_countRising()
+    int fall = f_countFalling()
+    curRise := rise
+    curFall := fall
+    bool isMega = hCount >= inpMinRise + 1 and lCount >= inpMinFall + 1 and rise >= inpMinRise and fall >= inpMinFall
+
+    if isMega
+        int upFromIdx = hCount - 1 - rise
+        int upToIdx   = hCount - 1
+        int loFromIdx = lCount - 1 - fall
+        int loToIdx   = lCount - 1
+        float upFromP = array.get(swingHighPrices, upFromIdx)
+        int   upFromB = array.get(swingHighBars,   upFromIdx)
+        float upToP   = array.get(swingHighPrices, upToIdx)
+        int   upToB   = array.get(swingHighBars,   upToIdx)
+        float loFromP = array.get(swingLowPrices,  loFromIdx)
+        int   loFromB = array.get(swingLowBars,    loFromIdx)
+        float loToP   = array.get(swingLowPrices,  loToIdx)
+        int   loToB   = array.get(swingLowBars,    loToIdx)
+
+        int   boxLeft   = math.min(upFromB, loFromB)
+        int   boxRight  = math.max(upToB, loToB)
+        float boxTop    = math.max(upToP, upFromP)
+        float boxBottom = math.min(loToP, loFromP)
+        float midP      = (boxTop + boxBottom) / 2
+        bool  isBull    = upToB > loToB
+
+        curBoxTop    := boxTop
+        curBoxBottom := boxBottom
+        curMidP      := midP
+        curRange     := boxTop - boxBottom
+        megaIsBullCode := isBull ? 1 : -1
+
+        color boxCol = isBull ? inpBullColor : inpBearColor
+        string megaType = isBull ? "BULL" : "BEAR"
+
+        if not megaActive
+            megaActive := true
+            newMega := true
+            megaStartBar := boxLeft
+            if inpShowTrend
+                megaUp := line.new(upFromB, upFromP, upToB, upToP, color=inpUpColor, width=2, extend=extend.right)
+                megaDn := line.new(loFromB, loFromP, loToB, loToP, color=inpDownColor, width=2, extend=extend.right)
+            if inpShowMid
+                megaMid := line.new(boxLeft, midP, boxRight, midP, color=inpMidColor, width=1, style=line.style_dashed, extend=extend.right)
+            if inpShowBox
+                megaBox := box.new(boxLeft, boxTop, boxRight, boxBottom,
+                     bgcolor=color.new(boxCol, 92), border_color=color.new(boxCol, 45),
+                     border_width=1, border_style=line.style_dotted)
+            label.new(megaStartBar, boxTop, text="◀ " + megaType + " MEGAPHONE ▶",
+                 style=label.style_label_down, color=color.new(boxCol, 20),
+                 textcolor=color.white, size=size.small)
+        else
+            if not na(megaUp)
+                line.set_xy1(megaUp, upFromB, upFromP)
+                line.set_xy2(megaUp, upToB, upToP)
+            if not na(megaDn)
+                line.set_xy1(megaDn, loFromB, loFromP)
+                line.set_xy2(megaDn, loToB, loToP)
+            if not na(megaMid)
+                line.set_xy1(megaMid, boxLeft, midP)
+                line.set_xy2(megaMid, boxRight, midP)
+            if not na(megaBox)
+                box.set_lefttop(megaBox, boxLeft, boxTop)
+                box.set_rightbottom(megaBox, boxRight, boxBottom)
+                box.set_bgcolor(megaBox, color.new(boxCol, 92))
+                box.set_border_color(megaBox, color.new(boxCol, 45))
+    else
+        if megaActive
+            megaActive := false
+            megaFrozen := true
+            if not na(megaUp)
+                line.set_extend(megaUp, extend.none)
+            if not na(megaDn)
+                line.set_extend(megaDn, extend.none)
+            if not na(megaMid)
+                line.set_extend(megaMid, extend.none)
+            armedBox := megaBox
+            megaUp  := na
+            megaDn  := na
+            megaMid := na
+            megaBox := na
+
+// ==========================================
+// --- 5. TRADING STATE & DATA ---
+// ==========================================
+
+var bool  hasPlan      = false
+var line  planBuyLine  = na
+var line  planSellLine = na
+var label planBuyLabel = na
+var label planSellLabel = na
+var float planTop      = na
+var float planBot      = na
+var float planMid      = na
+var float planRange    = na
+var int   armBar       = na
+
+var bool[]  tIsBuy     = array.new_bool()
+var float[] tEntry     = array.new_float()
+var float[] tSL        = array.new_float()
+var float[] tTP        = array.new_float()
+var int[]   tBarIdx    = array.new_int()
+var float[] tOneR      = array.new_float()
+var float[] tTradeRR   = array.new_float()
+var bool[]  tIs2nd     = array.new_bool()
+var int[]   tOriginTime = array.new_int()
+var float[] tBoxTop    = array.new_float()
+var float[] tBoxBot    = array.new_float()
+var float[] tMidP_arr  = array.new_float()
+var bool[]  tHas2nd    = array.new_bool()
+
+var bool[]  resIsWin   = array.new_bool()
+var float[] resTradeRR = array.new_float()
+var int[]   resTime    = array.new_int()
+var bool[]  resIs2nd   = array.new_bool()
+var float[] resPts     = array.new_float()
+
+var int[]   dayList    = array.new_int()
+int curDayId = year(time, tz) * 10000 + month(time, tz) * 100 + dayofmonth(time, tz)
+bool needPushDay = array.size(dayList) == 0
+if not needPushDay
+    needPushDay := array.get(dayList, array.size(dayList) - 1) != curDayId
+if needPushDay
+    array.push(dayList, curDayId)
+    if array.size(dayList) > 400
+        array.shift(dayList)
+
+int nDaysDraw  = math.min(statDays, array.size(dayList))
+int cutoffDraw = 0
+if array.size(dayList) > 0
+    cutoffDraw := array.get(dayList, array.size(dayList) - nDaysDraw)
+
+// ==========================================
+// --- 6. PLAN MANAGEMENT ---
+// ==========================================
+
+f_dayAllowed() =>
+    int pdow = dayofweek(time, tz)
+    bool ok = switch pdow
+        dayofweek.sunday    => tradeSun
+        dayofweek.monday    => tradeMon
+        dayofweek.tuesday   => tradeTue
+        dayofweek.wednesday => tradeWed
+        dayofweek.thursday  => tradeThu
+        dayofweek.friday    => tradeFri
+        dayofweek.saturday  => tradeSat
+        => true
+    ok
+
+// เปิดเทรด main: push arrays + วาด entry visuals (วงกลม, ลูกศร SL/TP, เส้น+ป้ายราคา, label CONFIRMED)
+f_openTrade(bool actIsB, float ent, float oneR, float boxT, float boxB, float midP, string noteTag) =>
+    float sl  = actIsB ? ent - oneR : ent + oneR
+    float tp  = actIsB ? ent + oneR * rrRatio : ent - oneR * rrRatio
+    float lot = oneR > 0 ? riskAmount / (oneR * pipValueRatio) : 0
+    array.push(tIsBuy, actIsB)
+    array.push(tEntry, ent)
+    array.push(tSL, sl)
+    array.push(tTP, tp)
+    array.push(tBarIdx, bar_index)
+    array.push(tOneR, oneR)
+    array.push(tTradeRR, rrRatio)
+    array.push(tIs2nd, false)
+    array.push(tOriginTime, time)
+    array.push(tBoxTop, boxT)
+    array.push(tBoxBot, boxB)
+    array.push(tMidP_arr, midP)
+    array.push(tHas2nd, false)
+    label.new(bar_index, ent, text="", style=label.style_circle,
+         color=color.new(actIsB ? color.green : color.red, 70), size=size.large)
+    line.new(bar_index, ent, bar_index, tp, color=color.new(color.green, 70), width=1, style=line.style_arrow_right)
+    line.new(bar_index, ent, bar_index, sl, color=color.new(color.red, 70), width=1, style=line.style_arrow_right)
+    line.new(bar_index, ent, bar_index + 6, ent, color=color.new(actIsB ? color.green : color.red, 30), width=2)
+    line.new(bar_index, tp, bar_index + 6, tp, color=color.new(color.green, 30), width=2)
+    line.new(bar_index, sl, bar_index + 6, sl, color=color.new(color.red, 30), width=2)
+    label.new(bar_index + 6, ent, text=str.tostring(ent, format.mintick), style=label.style_label_left, color=color.new(actIsB ? color.green : color.red, 80), textcolor=actIsB ? color.green : color.red, size=size.tiny)
+    label.new(bar_index + 6, tp, text=str.tostring(tp, format.mintick), style=label.style_label_left, color=color.new(color.green, 80), textcolor=color.green, size=size.tiny)
+    label.new(bar_index + 6, sl, text=str.tostring(sl, format.mintick), style=label.style_label_left, color=color.new(color.red, 80), textcolor=color.red, size=size.tiny)
+    string infoText = "CONFIRMED " + (actIsB ? "BUY" : "SELL") + noteTag + "\nSize: " + str.tostring(lot, "#.##") + " Lots"
+    label.new(bar_index, ent, text=infoText, color=color.new(color.black, 65), textcolor=color.new(color.white, 20),
+         style=actIsB ? label.style_label_up : label.style_label_down, size=size.small)
+    true
+
+if newMega
+    if hasPlan
+        line.delete(planBuyLine)
+        line.delete(planSellLine)
+        label.delete(planBuyLabel)
+        label.delete(planSellLabel)
+        hasPlan := false
+    armedBox := na
+    if array.size(tEntry) > 0
+        int ci = array.size(tEntry) - 1
+        while ci >= 0
+            if ci < array.size(tEntry)
+                bool  cIsB   = array.get(tIsBuy, ci)
+                float cEnt   = array.get(tEntry, ci)
+                float cOneR  = array.get(tOneR, ci)
+                float closePx = close
+                float pnlDist = cIsB ? closePx - cEnt : cEnt - closePx
+                float actualR = cOneR > 0 ? pnlDist / cOneR : 0
+                bool  isWin   = actualR > 0
+                color closeCol = isWin ? color.green : actualR == 0 ? color.gray : color.red
+                array.push(resIsWin, isWin)
+                array.push(resTradeRR, actualR)
+                array.push(resTime, array.get(tOriginTime, ci))
+                array.push(resIs2nd, array.get(tIs2nd, ci))
+                array.push(resPts, math.abs(pnlDist))
+                if array.size(resIsWin) > 5000
+                    array.shift(resIsWin), array.shift(resTradeRR), array.shift(resTime)
+                    array.shift(resIs2nd), array.shift(resPts)
+                label.new(bar_index, closePx, text="", style=label.style_circle, color=color.new(closeCol, 50), size=size.normal)
+                string rSign = actualR >= 0 ? "+" : ""
+                label.new(bar_index, closePx,
+                     text="Close (New Mega)\n" + rSign + str.tostring(actualR, "#.##") + "R",
+                     color=color.new(color.gray, 20), textcolor=color.white,
+                     style=cIsB ? label.style_label_up : label.style_label_down, size=size.tiny)
+                if showTradePath
+                    line.new(array.get(tBarIdx, ci), cEnt, bar_index, closePx,
+                         color=color.new(closeCol, 60), width=1, style=line.style_dashed)
+                array.remove(tIsBuy, ci), array.remove(tEntry, ci), array.remove(tSL, ci), array.remove(tTP, ci)
+                array.remove(tBarIdx, ci), array.remove(tOneR, ci), array.remove(tTradeRR, ci)
+                array.remove(tIs2nd, ci), array.remove(tOriginTime, ci)
+                array.remove(tBoxTop, ci), array.remove(tBoxBot, ci), array.remove(tMidP_arr, ci), array.remove(tHas2nd, ci)
+            ci -= 1
+// --- Arm plan when megaphone freezes (pattern จบ กรอบสุดท้ายนิ่งแล้ว) ---
+if megaFrozen and not na(curBoxTop) and not na(curBoxBottom) and curRange > 0
+    if close > curBoxTop or close < curBoxBottom
+        // ราคาหลุดกรอบไปแล้วตอนที่ pattern เพิ่ง freeze (pivot ยืนยันช้า)
+        // → pending stop ที่ขอบกรอบถือว่าโดน trigger, fill ที่ราคาขอบ (stop level) ไม่ใช่ที่ close
+        bool instIsB = close > curBoxTop
+        if useStopFill and f_dayAllowed()
+            float stopEnt  = instIsB ? curBoxTop + spreadPts : curBoxBottom - spreadPts
+            float instOneR = curRange * oneRPct
+            bool _o1 = f_openTrade(instIsB, stopEnt, instOneR, curBoxTop, curBoxBottom, curMidP, instIsB ? "\n(Buy Stop)" : "\n(Sell Stop)")
+        else
+            label.new(bar_index, instIsB ? curBoxTop : curBoxBottom, text="MISSED BREAK\n(late pivot)",
+                 style=instIsB ? label.style_label_down : label.style_label_up,
+                 color=color.new(color.gray, 40), textcolor=color.white, size=size.tiny)
+        armedBox := na
+    else
+        hasPlan   := true
+        planTop   := curBoxTop
+        planBot   := curBoxBottom
+        planMid   := curMidP
+        planRange := curRange
+        armBar    := bar_index
+        float oneR   = planRange * oneRPct
+        float bTP    = planTop + spreadPts + oneR * rrRatio
+        float sTP    = planBot - spreadPts - oneR * rrRatio
+        float bLot   = oneR > 0 ? riskAmount / (oneR * pipValueRatio) : 0
+        planBuyLine  := line.new(bar_index, planTop, bar_index + 3, planTop, color=color.new(color.green, 0), width=2, style=line.style_dashed)
+        planSellLine := line.new(bar_index, planBot, bar_index + 3, planBot, color=color.new(color.red, 0), width=2, style=line.style_dashed)
+        string bTxt = "BUY STOP ▲\nSize: " + str.tostring(bLot, "#.##") + " Lots\nR:R: 1:" + str.tostring(rrRatio, "#.#")
+        string sTxt = "SELL STOP ▼\nSize: " + str.tostring(bLot, "#.##") + " Lots\nR:R: 1:" + str.tostring(rrRatio, "#.#")
+        planBuyLabel  := label.new(bar_index, bTP, text=bTxt, color=color.new(color.green, 10), textcolor=color.white, style=label.style_label_up, size=size.small)
+        planSellLabel := label.new(bar_index, sTP, text=sTxt, color=color.new(color.red, 10), textcolor=color.white, style=label.style_label_down, size=size.small)
+else if megaFrozen
+    armedBox := na
+
+// --- Plan expiry (กันออเดอร์ผีไกลจากกล่อง) ---
+if barstate.isconfirmed and hasPlan and inpPlanExpiry > 0 and bar_index - armBar >= inpPlanExpiry
+    hasPlan := false
+    line.delete(planBuyLine)
+    line.delete(planSellLine)
+    label.delete(planBuyLabel)
+    label.delete(planSellLabel)
+    label.new(bar_index, planTop, text="PLAN EXPIRED", style=label.style_label_down,
+         color=color.new(color.gray, 40), textcolor=color.white, size=size.tiny)
+    armedBox := na
+
+// --- Extend plan lines + armed box to current bar ---
+if hasPlan
+    if not na(planBuyLine)
+        line.set_x2(planBuyLine, bar_index + 3)
+    if not na(planSellLine)
+        line.set_x2(planSellLine, bar_index + 3)
+    if not na(armedBox)
+        box.set_right(armedBox, bar_index)
+
+// ==========================================
+// --- 7. BREAKOUT TRIGGER + ENTRY VISUALS ---
+// ==========================================
+
+if barstate.isconfirmed and hasPlan and not megaFrozen and not na(planTop) and not na(planBot)
+    bool brkUp = high > planTop
+    bool brkDn = low < planBot
+    if brkUp and brkDn
+        brkUp := close > open
+        brkDn := not brkUp
+    bool triggered = brkUp or brkDn
+    if triggered
+        bool actIsB = brkUp
+        if f_dayAllowed()
+            float oneR = planRange * oneRPct
+            // Buy/Sell Stop fill ที่ขอบกรอบ; gap ข้าม level → fill ที่ open (slippage)
+            bool  gapFill = actIsB ? open > planTop : open < planBot
+            float ent  = actIsB ? math.max(planTop, open) + spreadPts : math.min(planBot, open) - spreadPts
+            string entTag = gapFill ? (actIsB ? "\n(Buy Stop · Gap)" : "\n(Sell Stop · Gap)") : (actIsB ? "\n(Buy Stop)" : "\n(Sell Stop)")
+            bool _o2 = f_openTrade(actIsB, ent, oneR, planTop, planBot, planMid, entTag)
+        else
+            // เบรคตรงวันที่ปิดเทรดตาม day filter → ข้าม แต่แสดงให้เห็นว่าเบรคแล้ว
+            label.new(bar_index, actIsB ? planTop : planBot, text="SKIP (Day Filter)",
+                 style=actIsB ? label.style_label_down : label.style_label_up,
+                 color=color.new(color.gray, 40), textcolor=color.white, size=size.tiny)
+        // --- Cancel plan (กล่องหยุดยืดที่แท่งเบรค) ---
+        hasPlan := false
+        line.delete(planBuyLine)
+        line.delete(planSellLine)
+        label.delete(planBuyLabel)
+        label.delete(planSellLabel)
+        armedBox := na
+
+// ==========================================
+// --- 8. 2ND ORDER ---
+// ==========================================
+
+if barstate.isconfirmed and (use2ndOrder or useReinforce) and array.size(tEntry) > 0
+    int si = array.size(tEntry) - 1
+    while si >= 0
+        if si < array.size(tEntry) and not array.get(tIs2nd, si) and not array.get(tHas2nd, si) and bar_index > array.get(tBarIdx, si)
+            bool  mIsB  = array.get(tIsBuy, si)
+            float mMid  = array.get(tMidP_arr, si)
+            float mBTop = array.get(tBoxTop, si)
+            float mBBot = array.get(tBoxBot, si)
+            bool  midHit = mIsB ? low <= mMid : high >= mMid
+            if midHit and use2ndOrder
+                // === CLOSE MAIN ORDER at midline ===
+                float mEnt      = array.get(tEntry, si)
+                float mOneR     = array.get(tOneR, si)
+                int   mBarIdx   = array.get(tBarIdx, si)
+                int   mOrigTime = array.get(tOriginTime, si)
+                float mPnlDist  = mIsB ? mMid - mEnt : mEnt - mMid
+                float mActualR  = mOneR > 0 ? mPnlDist / mOneR : 0
+                bool  mIsWin    = mActualR > 0
+                color mCloseCol = mIsWin ? color.green : mActualR == 0 ? color.gray : color.red
+                array.push(resIsWin, mIsWin)
+                array.push(resTradeRR, mActualR)
+                array.push(resTime, mOrigTime)
+                array.push(resIs2nd, false)
+                array.push(resPts, math.abs(mPnlDist))
+                if array.size(resIsWin) > 5000
+                    array.shift(resIsWin), array.shift(resTradeRR), array.shift(resTime)
+                    array.shift(resIs2nd), array.shift(resPts)
+                label.new(bar_index, mMid, text="", style=label.style_circle, color=color.new(mCloseCol, 50), size=size.normal)
+                string mRSign = mActualR >= 0 ? "+" : ""
+                label.new(bar_index, mMid, text="Close Main (2nd trigger)\n" + mRSign + str.tostring(mActualR, "#.##") + "R",
+                     color=color.new(color.gray, 20), textcolor=color.white,
+                     style=mIsB ? label.style_label_up : label.style_label_down, size=size.tiny)
+                line.new(bar_index - 3, mMid, bar_index + 3, mMid, color=mCloseCol, width=2)
+                if showTradePath
+                    line.new(mBarIdx, mEnt, bar_index, mMid,
+                         color=color.new(mCloseCol, 60), width=1, style=line.style_dashed)
+                array.remove(tIsBuy, si), array.remove(tEntry, si), array.remove(tSL, si), array.remove(tTP, si)
+                array.remove(tBarIdx, si), array.remove(tOneR, si), array.remove(tTradeRR, si)
+                array.remove(tIs2nd, si), array.remove(tOriginTime, si)
+                array.remove(tBoxTop, si), array.remove(tBoxBot, si), array.remove(tMidP_arr, si), array.remove(tHas2nd, si)
+                // === OPEN 2ND ORDER at midline ===
+                bool  sIsB = mIsB
+                float sEnt = mMid
+                float sSL  = sIsB ? mBBot : mBTop
+                float sTP  = sIsB ? mBTop : mBBot
+                float sOneR = math.abs(sEnt - sSL)
+                float sLot = sOneR > 0 ? riskAmount / (sOneR * pipValueRatio) : 0
+                float sRR  = sOneR > 0 ? math.abs(sTP - sEnt) / sOneR : 0
+                array.push(tIsBuy, sIsB)
+                array.push(tEntry, sEnt)
+                array.push(tSL, sSL)
+                array.push(tTP, sTP)
+                array.push(tBarIdx, bar_index)
+                array.push(tOneR, sOneR)
+                array.push(tTradeRR, sRR)
+                array.push(tIs2nd, true)
+                array.push(tOriginTime, time)
+                array.push(tBoxTop, mBTop)
+                array.push(tBoxBot, mBBot)
+                array.push(tMidP_arr, mMid)
+                array.push(tHas2nd, false)
+                // --- 2nd Entry visuals ---
+                label.new(bar_index, sEnt, text="", style=label.style_circle,
+                     color=color.new(sIsB ? color.green : color.red, 70), size=size.large)
+                line.new(bar_index, sEnt, bar_index, sTP, color=color.new(color.green, 70), width=1, style=line.style_arrow_right)
+                line.new(bar_index, sEnt, bar_index, sSL, color=color.new(color.red, 70), width=1, style=line.style_arrow_right)
+                line.new(bar_index, sEnt, bar_index + 6, sEnt, color=color.new(sIsB ? color.green : color.red, 30), width=2)
+                line.new(bar_index, sTP, bar_index + 6, sTP, color=color.new(color.green, 30), width=2)
+                line.new(bar_index, sSL, bar_index + 6, sSL, color=color.new(color.red, 30), width=2)
+                label.new(bar_index + 6, sEnt, text=str.tostring(sEnt, format.mintick), style=label.style_label_left, color=color.new(sIsB ? color.green : color.red, 80), textcolor=sIsB ? color.green : color.red, size=size.tiny)
+                label.new(bar_index + 6, sTP, text=str.tostring(sTP, format.mintick), style=label.style_label_left, color=color.new(color.green, 80), textcolor=color.green, size=size.tiny)
+                label.new(bar_index + 6, sSL, text=str.tostring(sSL, format.mintick), style=label.style_label_left, color=color.new(color.red, 80), textcolor=color.red, size=size.tiny)
+                string s2Txt = "CONFIRMED " + (sIsB ? "BUY" : "SELL") + " [2nd]\n(Megaphone)\nSize: " + str.tostring(sLot, "#.##") + " Lots"
+                label.new(bar_index, sEnt, text=s2Txt, color=color.new(color.black, 65), textcolor=color.new(color.white, 20),
+                     style=sIsB ? label.style_label_up : label.style_label_down, size=size.small)
+            else if midHit and useReinforce
+                // === REINFORCE: main ยังเปิดอยู่, เติมไม้เสริมที่ midline ===
+                array.set(tHas2nd, si, true)   // เติมไม้เดียวต่อ main
+                float mEnt = array.get(tEntry, si)
+                float mSL  = array.get(tSL, si)
+                float rEnt = mMid
+                float rTP  = mEnt          // TP = ราคาทุน main (ขอบเบรค)
+                float rSL  = mSL           // SL = SL เดียวกับ main
+                bool  rValid = mIsB ? (rSL < rEnt and rTP > rEnt) : (rSL > rEnt and rTP < rEnt)
+                if rValid
+                    float rOneR = math.abs(rEnt - rSL)
+                    float rLot  = rOneR > 0 ? riskAmount / (rOneR * pipValueRatio) : 0
+                    float rRR   = rOneR > 0 ? math.abs(rTP - rEnt) / rOneR : 0
+                    array.push(tIsBuy, mIsB)
+                    array.push(tEntry, rEnt)
+                    array.push(tSL, rSL)
+                    array.push(tTP, rTP)
+                    array.push(tBarIdx, bar_index)
+                    array.push(tOneR, rOneR)
+                    array.push(tTradeRR, rRR)
+                    array.push(tIs2nd, true)
+                    array.push(tOriginTime, time)
+                    array.push(tBoxTop, mBTop)
+                    array.push(tBoxBot, mBBot)
+                    array.push(tMidP_arr, mMid)
+                    array.push(tHas2nd, true)  // ไม้เสริมไม่ spawn ต่อ
+                    // --- Reinforce visuals ---
+                    label.new(bar_index, rEnt, text="", style=label.style_circle,
+                         color=color.new(mIsB ? color.green : color.red, 70), size=size.large)
+                    line.new(bar_index, rEnt, bar_index, rTP, color=color.new(color.green, 70), width=1, style=line.style_arrow_right)
+                    line.new(bar_index, rEnt, bar_index, rSL, color=color.new(color.red, 70), width=1, style=line.style_arrow_right)
+                    line.new(bar_index, rEnt, bar_index + 6, rEnt, color=color.new(mIsB ? color.green : color.red, 30), width=2)
+                    line.new(bar_index, rTP, bar_index + 6, rTP, color=color.new(color.green, 30), width=2)
+                    line.new(bar_index, rSL, bar_index + 6, rSL, color=color.new(color.red, 30), width=2)
+                    label.new(bar_index + 6, rEnt, text=str.tostring(rEnt, format.mintick), style=label.style_label_left, color=color.new(mIsB ? color.green : color.red, 80), textcolor=mIsB ? color.green : color.red, size=size.tiny)
+                    label.new(bar_index + 6, rTP, text=str.tostring(rTP, format.mintick), style=label.style_label_left, color=color.new(color.green, 80), textcolor=color.green, size=size.tiny)
+                    label.new(bar_index + 6, rSL, text=str.tostring(rSL, format.mintick), style=label.style_label_left, color=color.new(color.red, 80), textcolor=color.red, size=size.tiny)
+                    string rTxt = "REINFORCE " + (mIsB ? "BUY" : "SELL") + "\nTP=ทุน main\nSize: " + str.tostring(rLot, "#.##") + " Lots"
+                    label.new(bar_index, rEnt, text=rTxt, color=color.new(color.black, 65), textcolor=color.new(color.white, 20),
+                         style=mIsB ? label.style_label_up : label.style_label_down, size=size.small)
+                else
+                    label.new(bar_index, rEnt, text="Reinforce skipped\n(SL% ≤ 50%)",
+                         style=mIsB ? label.style_label_up : label.style_label_down,
+                         color=color.new(color.gray, 40), textcolor=color.white, size=size.tiny)
+        si -= 1
+
+// ==========================================
+// --- 9. EXIT CHECK (SL/TP) ---
+// ==========================================
+
+if barstate.isconfirmed and array.size(tEntry) > 0
+    int xi = array.size(tEntry) - 1
+    while xi >= 0
+        if xi < array.size(tEntry) and bar_index > array.get(tBarIdx, xi)
+            bool  isB    = array.get(tIsBuy, xi)
+            float ent    = array.get(tEntry, xi)
+            float sl     = array.get(tSL, xi)
+            float tp     = array.get(tTP, xi)
+            float dist   = array.get(tOneR, xi)
+            float thisRR = array.get(tTradeRR, xi)
+            bool  is2nd  = array.get(tIs2nd, xi)
+            bool closedWin  = false
+            bool closedLoss = false
+            if isB
+                if low <= sl
+                    closedLoss := true
+                else if high >= tp
+                    closedWin := true
+            else
+                if high >= sl
+                    closedLoss := true
+                else if low <= tp
+                    closedWin := true
+            if closedWin or closedLoss
+                float lossR   = dist > 0 ? -(math.abs(ent - sl) / dist) : -1.0
+                float actualR = closedWin ? thisRR : lossR
+                bool  statWin = closedWin
+                float exitPx  = closedWin ? tp : sl
+                color resCol  = closedWin ? color.green : color.red
+                string tag    = is2nd ? "2nd" : "Main"
+                array.push(resIsWin, statWin)
+                array.push(resTradeRR, actualR)
+                array.push(resTime, array.get(tOriginTime, xi))
+                array.push(resIs2nd, is2nd)
+                array.push(resPts, math.abs(exitPx - ent))
+                if array.size(resIsWin) > 5000
+                    array.shift(resIsWin), array.shift(resTradeRR), array.shift(resTime)
+                    array.shift(resIs2nd), array.shift(resPts)
+                // --- Exit visuals ---
+                label.new(bar_index, exitPx, text="", style=label.style_circle, color=color.new(resCol, 50), size=size.normal)
+                string rTxt = closedWin ? "Win " + tag + "\n+" + str.tostring(actualR, "#.##") + "R" : "Loss " + tag + "\n" + str.tostring(actualR, "#.##") + "R"
+                label.new(bar_index, exitPx, text=rTxt,
+                     color=color.new(resCol, 20), textcolor=color.white,
+                     style=closedWin == isB ? label.style_label_up : label.style_label_down, size=size.tiny)
+                line.new(bar_index - 3, exitPx, bar_index + 3, exitPx, color=resCol, width=2)
+                if showTradePath
+                    line.new(array.get(tBarIdx, xi), ent, bar_index, exitPx,
+                         color=color.new(resCol, 60), width=1, style=line.style_dashed)
+                array.remove(tIsBuy, xi), array.remove(tEntry, xi), array.remove(tSL, xi), array.remove(tTP, xi)
+                array.remove(tBarIdx, xi), array.remove(tOneR, xi), array.remove(tTradeRR, xi)
+                array.remove(tIs2nd, xi), array.remove(tOriginTime, xi)
+                array.remove(tBoxTop, xi), array.remove(tBoxBot, xi), array.remove(tMidP_arr, xi), array.remove(tHas2nd, xi)
+        xi -= 1
+
+// ==========================================
+// --- 10. LUXE STATS TABLES ---
+// ==========================================
+
+color lxGold    = color.rgb(212, 175, 55)
+color lxTitleTx = color.rgb(236, 210, 140)
+color lxHeadBg  = color.new(color.rgb(26, 32, 52), 6)
+color lxSubBg   = color.new(color.rgb(19, 24, 40), 8)
+color lxColHd   = color.rgb(150, 160, 182)
+color lxRowA    = color.new(color.rgb(13, 17, 28), 14)
+color lxRowB    = color.new(color.rgb(22, 28, 46), 14)
+color lxText    = color.rgb(233, 236, 243)
+color lxMuted   = color.rgb(128, 138, 158)
+color lxDimTx   = color.rgb(90, 98, 116)
+color lxGreen   = color.rgb(64, 216, 158)
+color lxRed     = color.rgb(250, 118, 118)
+color lxAmber   = color.rgb(251, 191, 36)
+color lxCyan    = color.rgb(102, 208, 255)
+color lxFrame   = color.new(lxGold, 42)
+color lxGrid    = color.new(color.rgb(7, 10, 17), 35)
+color lxBestBg  = color.new(lxGold, 84)
+color lxRowDim  = color.new(color.rgb(13, 17, 28), 52)
+
+var table statsTable        = table.new(f_tablePos(mainTablePos),    2, 12, bgcolor=lxRowA, frame_width=2, frame_color=lxFrame, border_width=1, border_color=lxGrid)
+var table dayStatsTable     = table.new(f_tablePos(dayTablePos),     4, 3 + enabledDayCnt, bgcolor=lxRowA, frame_width=2, frame_color=lxFrame, border_width=1, border_color=lxGrid)
+var table dailyStatsTable   = table.new(f_tablePos(dailyTablePos),   6, 34, bgcolor=lxRowA, frame_width=2, frame_color=lxFrame, border_width=1, border_color=lxGrid)
+var table monthlyStatsTable = table.new(f_tablePos(monthlyTablePos), 5, statMonths + 3, bgcolor=lxRowA, frame_width=2, frame_color=lxFrame, border_width=1, border_color=lxGrid)
+var bool lxMerged1 = false
+var bool lxMerged2 = false
+var bool lxMerged3 = false
+var bool lxMerged4 = false
+
+f_statValid(int t) =>
+    bool v = false
+    int tDayId = year(t, tz) * 10000 + month(t, tz) * 100 + dayofmonth(t, tz)
+    if statMode == "1. Days"
+        v := tDayId >= cutoffDraw
+    else if statMode == "2. Months"
+        v := (year(t, tz) * 12 + month(t, tz)) >= (currentTotalM - statMonths + 1)
+    else if statMode == "3. Specific Month"
+        v := month(t, tz) == targetMonthNum and year(t, tz) == actualTargetY
+    v
+
+// --- Main Stats Table ---
+if showStatsTable and barstate.islast
+    int winCnt = 0, int lossCnt = 0, int streak = 0, int maxW = 0, int maxL = 0
+    float netR = 0.0, float maxWinR = 0.0, float maxLossR = 0.0
+    int curStreakStart = 0, int maxWStart = 0, int maxWEnd = 0, int maxLStart = 0, int maxLEnd = 0
+    float curWinSum = 0.0, float curLossSum = 0.0
+    int[]   dowWin  = array.new_int(8, 0)
+    int[]   dowLoss = array.new_int(8, 0)
+    float[] dowNetR = array.new_float(8, 0.0)
+    if array.size(resIsWin) > 0
+        for i = 0 to array.size(resIsWin) - 1
+            int t = array.get(resTime, i)
+            if f_statValid(t)
+                float tradeR = array.get(resTradeRR, i)
+                bool  isWin  = array.get(resIsWin, i)
+                int   dow    = dayofweek(t, tz)
+                netR += tradeR
+                if streak == 0
+                    curStreakStart := t
+                if isWin
+                    winCnt += 1
+                    curWinSum := streak >= 0 ? curWinSum + tradeR : tradeR
+                    if streak < 0
+                        curStreakStart := t
+                    streak := streak >= 0 ? streak + 1 : 1
+                    if streak > maxW
+                        maxW := streak, maxWStart := curStreakStart, maxWEnd := t
+                    maxWinR := math.max(maxWinR, curWinSum)
+                    if dow >= 1 and dow <= 7
+                        array.set(dowWin, dow, array.get(dowWin, dow) + 1)
+                        array.set(dowNetR, dow, array.get(dowNetR, dow) + tradeR)
+                else
+                    lossCnt += 1
+                    curLossSum := streak <= 0 ? curLossSum + tradeR : tradeR
+                    if streak > 0
+                        curStreakStart := t
+                    streak := streak <= 0 ? streak - 1 : -1
+                    if -streak > maxL
+                        maxL := -streak, maxLStart := curStreakStart, maxLEnd := t
+                    maxLossR := math.min(maxLossR, curLossSum)
+                    if dow >= 1 and dow <= 7
+                        array.set(dowLoss, dow, array.get(dowLoss, dow) + 1)
+                        array.set(dowNetR, dow, array.get(dowNetR, dow) + tradeR)
+    int   totalCnt = winCnt + lossCnt
+    float wr       = totalCnt > 0 ? (winCnt * 1.0 / totalCnt) * 100 : na
+    color wrColor  = na(wr) ? lxMuted : wr >= 50 ? lxGreen : lxAmber
+    color netRCol  = totalCnt == 0 ? lxMuted : netR > 0 ? lxGreen : netR < 0 ? lxRed : lxAmber
+    string netRStr = totalCnt == 0 ? "-" : (netR > 0 ? "+" : "") + str.tostring(netR, "#.##") + "R"
+    string streakStr   = streak > 0 ? "W" + str.tostring(streak) : streak < 0 ? "L" + str.tostring(-streak) : "-"
+    color  streakColor = streak > 0 ? lxGreen : streak < 0 ? lxRed : lxMuted
+    string periodStr = statMode == "1. Days" ? "Last " + str.tostring(statDays) + " Days" : statMode == "2. Months" ? "Last " + str.tostring(statMonths) + " Months" : statTargetM + " " + str.tostring(actualTargetY)
+    table.cell(statsTable, 0, 0, "◆  MEGAPHONE BREAKOUT", text_color=lxTitleTx, text_size=size.small, bgcolor=lxHeadBg)
+    table.cell(statsTable, 0, 1, periodStr + "  ·  R:R 1:" + str.tostring(rrRatio, "#.#"), text_color=lxMuted, text_size=size.tiny, bgcolor=lxSubBg)
+    table.cell(statsTable, 0, 2, "Mode", text_color=lxMuted, text_size=size.tiny, bgcolor=lxRowA, text_halign=text.align_left)
+    table.cell(statsTable, 1, 2, "Breakout" + (use2ndOrder ? " + 2nd" : "") + (useReinforce ? " + Reinf" : ""), text_color=lxCyan, text_size=size.small, bgcolor=lxRowA, text_halign=text.align_right)
+    table.cell(statsTable, 0, 3, "1R Basis", text_color=lxMuted, text_size=size.tiny, bgcolor=lxRowB, text_halign=text.align_left)
+    table.cell(statsTable, 1, 3, str.tostring(oneRPctVal, "#.#") + "% Range", text_color=lxText, text_size=size.small, bgcolor=lxRowB, text_halign=text.align_right)
+    table.cell(statsTable, 0, 4, "Trades", text_color=lxMuted, text_size=size.tiny, bgcolor=lxRowA, text_halign=text.align_left)
+    table.cell(statsTable, 1, 4, totalCnt == 0 ? "-" : str.tostring(winCnt) + "W · " + str.tostring(lossCnt) + "L", text_color=lxText, text_size=size.small, bgcolor=lxRowA, text_halign=text.align_right)
+    table.cell(statsTable, 0, 5, "Winrate", text_color=lxMuted, text_size=size.tiny, bgcolor=lxRowB, text_halign=text.align_left)
+    table.cell(statsTable, 1, 5, na(wr) ? "-" : str.tostring(wr, "#.#") + "%\n" + f_wrBar(wr), text_color=wrColor, text_size=size.small, bgcolor=lxRowB, text_halign=text.align_right)
+    table.cell(statsTable, 0, 6, "Net R", text_color=lxMuted, text_size=size.tiny, bgcolor=lxRowA, text_halign=text.align_left)
+    table.cell(statsTable, 1, 6, netRStr, text_color=netRCol, text_size=size.normal, bgcolor=lxRowA, text_halign=text.align_right)
+    table.cell(statsTable, 0, 7, "Max Streak", text_color=lxMuted, text_size=size.tiny, bgcolor=lxRowB, text_halign=text.align_left)
+    table.cell(statsTable, 1, 7, "W" + str.tostring(maxW) + " · L" + str.tostring(maxL), text_color=lxAmber, text_size=size.small, bgcolor=lxRowB, text_halign=text.align_right)
+    string maxWDate = maxW > 0 ? str.tostring(dayofmonth(maxWStart, tz)) + " " + f_monthShort(month(maxWStart, tz)) + " – " + str.tostring(dayofmonth(maxWEnd, tz)) + " " + f_monthShort(month(maxWEnd, tz)) : "-"
+    string maxLDate = maxL > 0 ? str.tostring(dayofmonth(maxLStart, tz)) + " " + f_monthShort(month(maxLStart, tz)) + " – " + str.tostring(dayofmonth(maxLEnd, tz)) + " " + f_monthShort(month(maxLEnd, tz)) : "-"
+    table.cell(statsTable, 0, 8, " W" + str.tostring(maxW) + " Date", text_color=lxMuted, text_size=size.tiny, bgcolor=lxRowA, text_halign=text.align_left)
+    table.cell(statsTable, 1, 8, maxWDate, text_color=maxW > 0 ? lxGreen : lxMuted, text_size=size.tiny, bgcolor=lxRowA, text_halign=text.align_right)
+    table.cell(statsTable, 0, 9, " L" + str.tostring(maxL) + " Date", text_color=lxMuted, text_size=size.tiny, bgcolor=lxRowB, text_halign=text.align_left)
+    table.cell(statsTable, 1, 9, maxLDate, text_color=maxL > 0 ? lxRed : lxMuted, text_size=size.tiny, bgcolor=lxRowB, text_halign=text.align_right)
+    table.cell(statsTable, 0, 10, "Streak", text_color=lxMuted, text_size=size.tiny, bgcolor=lxRowA, text_halign=text.align_left)
+    table.cell(statsTable, 1, 10, streakStr, text_color=streakColor, text_size=size.small, bgcolor=lxRowA, text_halign=text.align_right)
+    table.cell(statsTable, 0, 11, "Active", text_color=lxDimTx, text_size=size.tiny, bgcolor=lxRowB, text_halign=text.align_left)
+    table.cell(statsTable, 1, 11, str.tostring(array.size(tEntry)), text_color=lxAmber, text_size=size.tiny, bgcolor=lxRowB, text_halign=text.align_right)
+    if not lxMerged1
+        lxMerged1 := true
+        table.merge_cells(statsTable, 0, 0, 1, 0)
+        table.merge_cells(statsTable, 0, 1, 1, 1)
+
+    // --- By Day Table ---
+    if showDayTable
+        bool[] showDayArr = array.from(showSun, showMon, showTue, showWed, showThu, showFri, showSat)
+        int bestDow = 0, float bestNR = 0.0
+        for bd = 0 to 6
+            int bDow = bd + 1
+            if array.get(showDayArr, bd) and array.get(dowWin, bDow) + array.get(dowLoss, bDow) > 0 and array.get(dowNetR, bDow) > bestNR
+                bestNR := array.get(dowNetR, bDow), bestDow := bDow
+        table.cell(dayStatsTable, 0, 0, "◆  BY DAY  ·  " + periodStr, text_color=lxTitleTx, text_size=size.small, bgcolor=lxHeadBg)
+        table.cell(dayStatsTable, 0, 1, "DAY", text_color=lxColHd, text_size=size.tiny, bgcolor=lxSubBg)
+        table.cell(dayStatsTable, 1, 1, "W-L", text_color=lxColHd, text_size=size.tiny, bgcolor=lxSubBg)
+        table.cell(dayStatsTable, 2, 1, "WR%", text_color=lxColHd, text_size=size.tiny, bgcolor=lxSubBg)
+        table.cell(dayStatsTable, 3, 1, "NET R", text_color=lxColHd, text_size=size.tiny, bgcolor=lxSubBg)
+        int sumW = 0, int sumL = 0, float sumR = 0.0, int rowI = 2
+        for d = 0 to 6
+            int dow = d + 1
+            if array.get(showDayArr, d)
+                int dw = array.get(dowWin, dow), int dl = array.get(dowLoss, dow), float dnr = array.get(dowNetR, dow)
+                int dtot = dw + dl
+                float dwr = dtot > 0 ? (dw * 1.0 / dtot) * 100.0 : na
+                color dwrC = na(dwr) ? lxDimTx : dwr >= 50 ? lxGreen : lxAmber
+                color dnrC = dtot == 0 ? lxDimTx : dnr > 0 ? lxGreen : dnr < 0 ? lxRed : lxAmber
+                string dName = d == 0 ? "Sun" : d == 1 ? "Mon" : d == 2 ? "Tue" : d == 3 ? "Wed" : d == 4 ? "Thu" : d == 5 ? "Fri" : "Sat"
+                string dwlS = dtot == 0 ? "-" : str.tostring(dw) + "W · " + str.tostring(dl) + "L"
+                string dwrS = na(dwr) ? "-" : str.tostring(dwr, "#.#") + "%"
+                string dnrS = dtot == 0 ? "-" : (dnr >= 0 ? "+" : "") + str.tostring(dnr, "#.##") + "R"
+                bool isBest = dow == bestDow and dtot > 0
+                color rowBg = isBest ? lxBestBg : rowI % 2 == 0 ? lxRowA : lxRowB
+                color dnameC = isBest ? lxTitleTx : dtot == 0 ? lxDimTx : lxText
+                table.cell(dayStatsTable, 0, rowI, (isBest ? "★ " : "") + dName, text_color=dnameC, text_size=size.small, bgcolor=rowBg, text_halign=text.align_left)
+                table.cell(dayStatsTable, 1, rowI, dwlS, text_color=dtot == 0 ? lxDimTx : lxText, text_size=size.small, bgcolor=rowBg)
+                table.cell(dayStatsTable, 2, rowI, dwrS, text_color=dwrC, text_size=size.small, bgcolor=rowBg)
+                table.cell(dayStatsTable, 3, rowI, dnrS, text_color=dnrC, text_size=size.small, bgcolor=rowBg, text_halign=text.align_right)
+                sumW += dw, sumL += dl, sumR += dnr, rowI += 1
+        int sumTot = sumW + sumL
+        float sumWR = sumTot > 0 ? (sumW * 1.0 / sumTot) * 100.0 : na
+        table.cell(dayStatsTable, 0, rowI, "TOTAL", text_color=lxTitleTx, text_size=size.tiny, bgcolor=lxHeadBg, text_halign=text.align_left)
+        table.cell(dayStatsTable, 1, rowI, sumTot == 0 ? "-" : str.tostring(sumW) + "W · " + str.tostring(sumL) + "L", text_color=lxText, text_size=size.tiny, bgcolor=lxHeadBg)
+        table.cell(dayStatsTable, 2, rowI, na(sumWR) ? "-" : str.tostring(sumWR, "#.#") + "%", text_color=na(sumWR) ? lxDimTx : sumWR >= 50 ? lxGreen : lxAmber, text_size=size.tiny, bgcolor=lxHeadBg)
+        table.cell(dayStatsTable, 3, rowI, sumTot == 0 ? "-" : (sumR >= 0 ? "+" : "") + str.tostring(sumR, "#.##") + "R", text_color=sumTot == 0 ? lxDimTx : sumR > 0 ? lxGreen : sumR < 0 ? lxRed : lxAmber, text_size=size.tiny, bgcolor=lxHeadBg, text_halign=text.align_right)
+        if not lxMerged2
+            lxMerged2 := true
+            table.merge_cells(dayStatsTable, 0, 0, 3, 0)
+
+// --- Daily Log Table ---
+if showDailyTable and barstate.islast
+    int[] ddWin = array.new_int(32, 0), int[] ddLoss = array.new_int(32, 0)
+    float[] ddNetR = array.new_float(32, 0.0)
+    float[] ddWinPips = array.new_float(32, 0.0), float[] ddLossPips = array.new_float(32, 0.0)
+    if array.size(resIsWin) > 0
+        for k = 0 to array.size(resIsWin) - 1
+            int t = array.get(resTime, k)
+            if month(t, tz) == targetMonthNum and year(t, tz) == actualTargetY
+                int d = dayofmonth(t, tz)
+                float tR = array.get(resTradeRR, k)
+                float tPts = array.get(resPts, k)
+                if d >= 1 and d <= 31
+                    if array.get(resIsWin, k)
+                        array.set(ddWin, d, array.get(ddWin, d) + 1)
+                        array.set(ddWinPips, d, array.get(ddWinPips, d) + tPts)
+                    else
+                        array.set(ddLoss, d, array.get(ddLoss, d) + 1)
+                        array.set(ddLossPips, d, array.get(ddLossPips, d) + tPts)
+                    array.set(ddNetR, d, array.get(ddNetR, d) + tR)
+    table.cell(dailyStatsTable, 0, 0, "◆  DAILY LOG  ·  " + statTargetM + " " + str.tostring(actualTargetY), text_color=lxTitleTx, text_size=size.small, bgcolor=lxHeadBg)
+    table.cell(dailyStatsTable, 0, 1, "DATE", text_color=lxColHd, text_size=size.tiny, bgcolor=lxSubBg)
+    table.cell(dailyStatsTable, 1, 1, "W-L", text_color=lxColHd, text_size=size.tiny, bgcolor=lxSubBg)
+    table.cell(dailyStatsTable, 2, 1, "WR%", text_color=lxColHd, text_size=size.tiny, bgcolor=lxSubBg)
+    table.cell(dailyStatsTable, 3, 1, "NET R", text_color=lxColHd, text_size=size.tiny, bgcolor=lxSubBg)
+    table.cell(dailyStatsTable, 4, 1, "WIN P", text_color=lxColHd, text_size=size.tiny, bgcolor=lxSubBg)
+    table.cell(dailyStatsTable, 5, 1, "LOSS P", text_color=lxColHd, text_size=size.tiny, bgcolor=lxSubBg)
+    int totW2 = 0, int totL2 = 0, float totR2 = 0.0
+    for d = 1 to 31
+        int dw = array.get(ddWin, d), int dl = array.get(ddLoss, d)
+        float dnr = array.get(ddNetR, d), float dwp = array.get(ddWinPips, d), float dlp = array.get(ddLossPips, d)
+        int dtot = dw + dl
+        float dwr = dtot > 0 ? (dw * 1.0 / dtot) * 100.0 : na
+        color dwrC = na(dwr) ? lxDimTx : dwr >= 50.0 ? lxGreen : lxAmber
+        color dnrC = dtot == 0 ? lxDimTx : dnr > 0 ? lxGreen : dnr < 0 ? lxRed : lxAmber
+        color dayBg = dtot == 0 ? lxRowDim : d % 2 == 1 ? lxRowA : lxRowB
+        color dateC = dtot == 0 ? lxDimTx : lxText
+        table.cell(dailyStatsTable, 0, d + 1, str.tostring(d), text_color=dateC, text_size=size.tiny, bgcolor=dayBg)
+        table.cell(dailyStatsTable, 1, d + 1, dtot == 0 ? "-" : str.tostring(dw) + "W·" + str.tostring(dl) + "L", text_color=dateC, text_size=size.tiny, bgcolor=dayBg)
+        table.cell(dailyStatsTable, 2, d + 1, na(dwr) ? "-" : str.tostring(dwr, "#.#") + "%", text_color=dwrC, text_size=size.tiny, bgcolor=dayBg)
+        table.cell(dailyStatsTable, 3, d + 1, dtot == 0 ? "-" : (dnr >= 0 ? "+" : "") + str.tostring(dnr, "#.##") + "R", text_color=dnrC, text_size=size.tiny, bgcolor=dayBg, text_halign=text.align_right)
+        table.cell(dailyStatsTable, 4, d + 1, dtot == 0 ? "-" : str.tostring(dwp, "#.#"), text_color=dtot == 0 ? lxDimTx : lxGreen, text_size=size.tiny, bgcolor=dayBg)
+        table.cell(dailyStatsTable, 5, d + 1, dtot == 0 ? "-" : str.tostring(dlp, "#.#"), text_color=dtot == 0 ? lxDimTx : lxRed, text_size=size.tiny, bgcolor=dayBg)
+        totW2 += dw, totL2 += dl, totR2 += dnr
+    int totTot2 = totW2 + totL2
+    float totWR2 = totTot2 > 0 ? (totW2 * 1.0 / totTot2) * 100.0 : na
+    table.cell(dailyStatsTable, 0, 33, "TOTAL", text_color=lxTitleTx, text_size=size.tiny, bgcolor=lxHeadBg)
+    table.cell(dailyStatsTable, 1, 33, totTot2 == 0 ? "-" : str.tostring(totW2) + "W·" + str.tostring(totL2) + "L", text_color=lxText, text_size=size.tiny, bgcolor=lxHeadBg)
+    table.cell(dailyStatsTable, 2, 33, na(totWR2) ? "-" : str.tostring(totWR2, "#.#") + "%", text_color=na(totWR2) ? lxDimTx : totWR2 >= 50 ? lxGreen : lxAmber, text_size=size.tiny, bgcolor=lxHeadBg)
+    table.cell(dailyStatsTable, 3, 33, totTot2 == 0 ? "-" : (totR2 >= 0 ? "+" : "") + str.tostring(totR2, "#.##") + "R", text_color=totTot2 == 0 ? lxDimTx : totR2 > 0 ? lxGreen : totR2 < 0 ? lxRed : lxAmber, text_size=size.tiny, bgcolor=lxHeadBg, text_halign=text.align_right)
+    table.cell(dailyStatsTable, 4, 33, "", text_color=lxDimTx, text_size=size.tiny, bgcolor=lxHeadBg)
+    table.cell(dailyStatsTable, 5, 33, na(totWR2) ? "" : f_wrBar(totWR2), text_color=na(totWR2) ? lxDimTx : totWR2 >= 50 ? lxGreen : lxAmber, text_size=size.tiny, bgcolor=lxHeadBg)
+    if not lxMerged3
+        lxMerged3 := true
+        table.merge_cells(dailyStatsTable, 0, 0, 5, 0)
+
+// --- Monthly Table ---
+if showMonthlyTable and barstate.islast and statMode == "2. Months"
+    int startTotalM = currentTotalM - statMonths + 1
+    int[] mWin = array.new_int(statMonths, 0), int[] mLoss = array.new_int(statMonths, 0)
+    float[] mNetR = array.new_float(statMonths, 0.0)
+    int[] mMaxW = array.new_int(statMonths, 0), int[] mMaxL = array.new_int(statMonths, 0), int[] mStreak = array.new_int(statMonths, 0)
+    if array.size(resIsWin) > 0
+        for i = 0 to array.size(resIsWin) - 1
+            int t = array.get(resTime, i)
+            int tTotalM = year(t, tz) * 12 + month(t, tz)
+            int idx = tTotalM - startTotalM
+            if idx >= 0 and idx < statMonths
+                float tradeR = array.get(resTradeRR, i)
+                bool isWin = array.get(resIsWin, i)
+                int curStrk = array.get(mStreak, idx)
+                if isWin
+                    array.set(mWin, idx, array.get(mWin, idx) + 1)
+                    curStrk := curStrk >= 0 ? curStrk + 1 : 1
+                    array.set(mMaxW, idx, math.max(array.get(mMaxW, idx), curStrk))
+                else
+                    array.set(mLoss, idx, array.get(mLoss, idx) + 1)
+                    curStrk := curStrk <= 0 ? curStrk - 1 : -1
+                    array.set(mMaxL, idx, math.max(array.get(mMaxL, idx), -curStrk))
+                array.set(mStreak, idx, curStrk)
+                array.set(mNetR, idx, array.get(mNetR, idx) + tradeR)
+    table.cell(monthlyStatsTable, 0, 0, "◆  MONTHLY  ·  Last " + str.tostring(statMonths) + " Months", text_color=lxTitleTx, text_size=size.small, bgcolor=lxHeadBg)
+    table.cell(monthlyStatsTable, 0, 1, "MONTH", text_color=lxColHd, text_size=size.tiny, bgcolor=lxSubBg)
+    table.cell(monthlyStatsTable, 1, 1, "W-L", text_color=lxColHd, text_size=size.tiny, bgcolor=lxSubBg)
+    table.cell(monthlyStatsTable, 2, 1, "WR%", text_color=lxColHd, text_size=size.tiny, bgcolor=lxSubBg)
+    table.cell(monthlyStatsTable, 3, 1, "NET R", text_color=lxColHd, text_size=size.tiny, bgcolor=lxSubBg)
+    table.cell(monthlyStatsTable, 4, 1, "STREAK", text_color=lxColHd, text_size=size.tiny, bgcolor=lxSubBg)
+    int bestMIdx = -1, float bestMNR = 0.0
+    for m = 0 to statMonths - 1
+        if (array.get(mWin, m) + array.get(mLoss, m)) > 0 and array.get(mNetR, m) > bestMNR
+            bestMNR := array.get(mNetR, m), bestMIdx := m
+    int mSumW = 0, int mSumL = 0, float mSumR = 0.0
+    for m = 0 to statMonths - 1
+        int totalM = startTotalM + m
+        int mMon = (totalM - 1) % 12 + 1
+        int mYr = math.round((totalM - mMon) / 12)
+        string mLabel = f_monthShort(mMon) + " " + str.tostring(mYr)
+        int mw = array.get(mWin, m), int ml = array.get(mLoss, m), float mnr = array.get(mNetR, m)
+        int mtot = mw + ml
+        float mwr = mtot > 0 ? (mw * 1.0 / mtot) * 100.0 : na
+        color mwrC = na(mwr) ? lxDimTx : mwr >= 50 ? lxGreen : lxAmber
+        color mnrC = mtot == 0 ? lxDimTx : mnr > 0 ? lxGreen : mnr < 0 ? lxRed : lxAmber
+        bool isBestM = m == bestMIdx and mtot > 0
+        color mRowBg = isBestM ? lxBestBg : m % 2 == 0 ? lxRowA : lxRowB
+        color mLblC = isBestM ? lxTitleTx : mtot == 0 ? lxDimTx : lxText
+        int mmxW = array.get(mMaxW, m), int mmxL = array.get(mMaxL, m)
+        table.cell(monthlyStatsTable, 0, m + 2, (isBestM ? "★ " : "") + mLabel, text_color=mLblC, text_size=size.small, bgcolor=mRowBg, text_halign=text.align_left)
+        table.cell(monthlyStatsTable, 1, m + 2, mtot == 0 ? "-" : str.tostring(mw) + "W·" + str.tostring(ml) + "L", text_color=mtot == 0 ? lxDimTx : lxText, text_size=size.small, bgcolor=mRowBg)
+        table.cell(monthlyStatsTable, 2, m + 2, na(mwr) ? "-" : str.tostring(mwr, "#.#") + "%", text_color=mwrC, text_size=size.small, bgcolor=mRowBg)
+        table.cell(monthlyStatsTable, 3, m + 2, mtot == 0 ? "-" : (mnr >= 0 ? "+" : "") + str.tostring(mnr, "#.##") + "R", text_color=mnrC, text_size=size.small, bgcolor=mRowBg, text_halign=text.align_right)
+        table.cell(monthlyStatsTable, 4, m + 2, mtot == 0 ? "-" : "W" + str.tostring(mmxW) + "·L" + str.tostring(mmxL), text_color=mtot == 0 ? lxDimTx : lxAmber, text_size=size.small, bgcolor=mRowBg)
+        mSumW += mw, mSumL += ml, mSumR += mnr
+    int mSumTot = mSumW + mSumL
+    float mSumWR = mSumTot > 0 ? (mSumW * 1.0 / mSumTot) * 100.0 : na
+    int totalRow = statMonths + 2
+    table.cell(monthlyStatsTable, 0, totalRow, "TOTAL", text_color=lxTitleTx, text_size=size.tiny, bgcolor=lxHeadBg, text_halign=text.align_left)
+    table.cell(monthlyStatsTable, 1, totalRow, mSumTot == 0 ? "-" : str.tostring(mSumW) + "W·" + str.tostring(mSumL) + "L", text_color=lxText, text_size=size.tiny, bgcolor=lxHeadBg)
+    table.cell(monthlyStatsTable, 2, totalRow, na(mSumWR) ? "-" : str.tostring(mSumWR, "#.#") + "%", text_color=na(mSumWR) ? lxDimTx : mSumWR >= 50 ? lxGreen : lxAmber, text_size=size.tiny, bgcolor=lxHeadBg)
+    table.cell(monthlyStatsTable, 3, totalRow, mSumTot == 0 ? "-" : (mSumR >= 0 ? "+" : "") + str.tostring(mSumR, "#.##") + "R", text_color=mSumTot == 0 ? lxDimTx : mSumR > 0 ? lxGreen : mSumR < 0 ? lxRed : lxAmber, text_size=size.tiny, bgcolor=lxHeadBg, text_halign=text.align_right)
+    table.cell(monthlyStatsTable, 4, totalRow, "", text_color=lxDimTx, text_size=size.tiny, bgcolor=lxHeadBg)
+    if not lxMerged4
+        lxMerged4 := true
+        table.merge_cells(monthlyStatsTable, 0, 0, 4, 0)
+
+// ==========================================
+// --- 11. INFO PANEL ---
+// ==========================================
+
+if inpShowPanel and barstate.islast
+    color bullBearCol = megaIsBullCode == 1 ? inpBullColor : megaIsBullCode == -1 ? inpBearColor : color.gray
+    string typeStr    = megaIsBullCode == 1 ? "BULL" : megaIsBullCode == -1 ? "BEAR" : "-"
+    var table panel = table.new(position.top_right, 2, 7, bgcolor=color.new(color.black, 70), border_width=1)
+    table.cell(panel, 0, 0, "Megaphone", text_color=bullBearCol, text_size=size.normal, text_halign=text.align_left)
+    table.cell(panel, 1, 0, megaActive ? "● " + typeStr + " FORMING" : hasPlan ? "● ARMED" : "— none —",
+         text_color=megaActive ? bullBearCol : hasPlan ? color.blue : color.gray, text_size=size.normal, text_halign=text.align_left)
+    table.cell(panel, 0, 1, "Rising Highs", text_color=color.white, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 1, 1, str.tostring(curRise) + " / " + str.tostring(inpMinRise),
+         text_color=curRise >= inpMinRise ? inpUpColor : color.gray, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 0, 2, "Falling Lows", text_color=color.white, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 1, 2, str.tostring(curFall) + " / " + str.tostring(inpMinFall),
+         text_color=curFall >= inpMinFall ? inpDownColor : color.gray, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 0, 3, "Swings H/L", text_color=color.gray, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 1, 3, str.tostring(hCount) + " / " + str.tostring(lCount),
+         text_color=color.gray, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 0, 4, "Box Range", text_color=color.gray, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 1, 4, not na(curRange) ? str.tostring(curRange, format.mintick) : "-",
+         text_color=color.gray, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 0, 5, "Trades", text_color=color.aqua, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 1, 5, str.tostring(array.size(tEntry)) + " active",
+         text_color=color.aqua, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 0, 6, "Plan", text_color=color.aqua, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 1, 6, hasPlan ? "OCO Buy/Sell Stop" : "—",
+         text_color=hasPlan ? color.blue : color.gray, text_size=size.small, text_halign=text.align_left)
+
+// ==========================================
+// --- 12. ALERTS ---
+// ==========================================
+
+if inpAlertOn and newMega
+    string alertType = megaIsBullCode == 1 ? "Bull" : "Bear"
+    alert(alertType + " Megaphone / Broadening Formation detected", alert.freq_once_per_bar)
+
+alertcondition(newMega, title="Megaphone Detected",
+     message="Megaphone / Broadening Formation detected")
